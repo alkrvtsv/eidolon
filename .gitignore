@@ -1,69 +1,32 @@
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Linker files
-*.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-*.so.*
-
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# Build directories
+# --- C++ / CMake ---
 build/
-Build/
-build-*/
-
-# CMake generated files
-CMakeFiles/
+out/
+bin/
+*.obj
+*.exe
+*.dll
+*.lib
+*.pdb
 CMakeCache.txt
-cmake_install.cmake
-Makefile
-install_manifest.txt
-compile_commands.json
+CMakeFiles/
 
-# Temporary files
-*.tmp
-*.log
-*.bak
-*.swp
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
 
-# vcpkg
-vcpkg_installed/
+# --- IDEs & OS ---
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+.DS_Store
+Thumbs.db
 
-# debug information files
-*.dwo
-
-# test output & cache
-Testing/
-.cache/
+# --- Project Specific ---
+# Игнорируем локальные конфиги, оставляя только шаблоны
+signaling/config/local_*.json
