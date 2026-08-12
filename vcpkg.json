@@ -3,6 +3,9 @@
     {
       "name": "libdatachannel",
       "features": ["srtp"]
-    }
+    },
+    "sdl2",
+    "ffmpeg",
+    "nlohmann-json"
   ]
 }

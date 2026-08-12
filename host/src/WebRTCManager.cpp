@@ -63,15 +63,20 @@ bool WebRTCManager::Init() {
 }
 
 void WebRTCManager::SetRemoteDescription(const std::string& type, const std::string& sdp) {
+    // Если пришел новый offer - значит клиент переподключился. Убиваем старую сессию.
+    if (type == "offer") {
+        std::cout << "[WebRTC] Новый клиент (или переподключение)! Перезапускаем сессию..." << std::endl;
+        if (pc) {
+            pc->close(); // Закрываем старые порты UDP
+        }
+        Init(); // Заново создаем PeerConnection и видеотрек
+    }
+
     std::cout << "[WebRTC] Применяем Remote Description типа: " << type << std::endl;
-    
-    // Передаем параметры клиента в ядро WebRTC
     pc->setRemoteDescription(rtc::Description(sdp, type));
     
-    // Если клиент прислал "offer", мы должны сгенерировать "answer"
     if (type == "offer") {
         std::cout << "[WebRTC] Offer получен. Генерируем Answer..." << std::endl;
-        // libdatachannel автоматически создаст answer, если вызвать этот метод без аргументов
         pc->setLocalDescription(); 
     }
 }

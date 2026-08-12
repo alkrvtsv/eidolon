@@ -86,7 +86,7 @@ int main() {
 
             // 5. Проверяем результат
             if (!encodedData.empty()) {
-                std::cout << "[Video] Кадр сжат! Размер: " << encodedData.size() << " байт." << std::endl;
+                // std::cout << "[Video] Кадр сжат! Размер: " << encodedData.size() << " байт." << std::endl;
                 
                 // ОТПРАВЛЯЕМ КАДР КЛИЕНТУ!
                 rtcManager.SendVideoData(encodedData);

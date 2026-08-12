@@ -87,10 +87,14 @@ bool NVENCEncoder::Init(ID3D11Device* d3dDevice, uint32_t width, uint32_t height
         return false;
     }
 
-    // 3. ЖЕСТКО задаем параметры битрейта
-    presetConfig.presetCfg.gopLength = NVENC_INFINITE_GOPLENGTH; 
+    // 3. ЖЕСТКО задаем параметры битрейта и ключевых кадров
+    presetConfig.presetCfg.gopLength = 60; // 1 ключевой кадр каждую секунду (при 60 FPS)
     presetConfig.presetCfg.frameIntervalP = 1;                    
     
+    // ПРИНУДИТЕЛЬНО просим NVENC вставлять заголовки SPS и PPS в каждый ключевой кадр
+    presetConfig.presetCfg.encodeCodecConfig.h264Config.idrPeriod = 60;
+    presetConfig.presetCfg.encodeCodecConfig.h264Config.repeatSPSPPS = 1; 
+
     presetConfig.presetCfg.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
     presetConfig.presetCfg.rcParams.averageBitRate = 15000000;   
     presetConfig.presetCfg.rcParams.maxBitRate = 15000000;
