@@ -9,6 +9,8 @@ bin/
 *.pdb
 CMakeCache.txt
 CMakeFiles/
+CMakeUserPresets.json
+.cmake/
 
 # --- Python ---
 __pycache__/
@@ -26,6 +28,10 @@ env/
 *.user
 .DS_Store
 Thumbs.db
+
+# --- Package Managers ---
+vcpkg/
+vcpkg_installed/
 
 # --- Project Specific ---
 # Игнорируем локальные конфиги, оставляя только шаблоны
