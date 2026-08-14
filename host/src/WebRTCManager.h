@@ -24,7 +24,5 @@ public:
 
 private:
     std::shared_ptr<rtc::PeerConnection> pc;
-    
-    // НОВАЯ ПЕРЕМЕННАЯ:
-    std::shared_ptr<rtc::Track> videoTrack; 
+    std::atomic<std::shared_ptr<rtc::Track>> videoTrack;
 };

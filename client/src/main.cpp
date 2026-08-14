@@ -65,9 +65,13 @@ int main(int argc, char* argv[]) {
 
     ws.onMessage([&](std::variant<rtc::binary, std::string> data) {
         if (std::holds_alternative<std::string>(data)) {
-            auto msg = json::parse(std::get<std::string>(data));
-            if (msg["type"] == "answer") webrtc.SetRemoteDescription(msg["type"], msg["sdp"]);
-            else if (msg["type"] == "ice_candidate") webrtc.AddRemoteCandidate(msg["candidate"], msg["sdpMid"]);
+            try {
+                auto msg = json::parse(std::get<std::string>(data));
+                if (msg["type"] == "answer") webrtc.SetRemoteDescription(msg["type"], msg["sdp"]);
+                else if (msg["type"] == "ice_candidate") webrtc.AddRemoteCandidate(msg["candidate"], msg["sdpMid"]);
+            } catch (const std::exception& e) {
+                std::cerr << "[-] Ошибка парсинга JSON: " << e.what() << std::endl;
+            }
         }
     });
 

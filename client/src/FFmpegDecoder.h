@@ -24,4 +24,6 @@ private:
     AVPacket* packet = nullptr;
     AVFrame* frame = nullptr;
     std::vector<uint8_t> frameBuffer;
+    uint16_t expectedSeq = 0;
+    bool haveExpected = false;
 };

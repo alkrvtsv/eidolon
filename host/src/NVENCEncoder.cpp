@@ -112,12 +112,25 @@ bool NVENCEncoder::Init(ID3D11Device* d3dDevice, uint32_t width, uint32_t height
     }
 
     std::cout << "[+] NVENC: Аппаратный кодировщик NVIDIA успешно инициализирован!" << std::endl;
+
+    NV_ENC_CREATE_BITSTREAM_BUFFER bitstreamParams = { NV_ENC_CREATE_BITSTREAM_BUFFER_VER };
+    if (nvenc.nvEncCreateBitstreamBuffer(hEncoder, &bitstreamParams) == NV_ENC_SUCCESS) {
+        bitstreamBuffer = bitstreamParams.bitstreamBuffer;
+    } else {
+        std::cerr << "[-] NVENC: Ошибка выделения bitstream-буфера." << std::endl;
+        return false;
+    }
+
     return true;
 }
 
 void NVENCEncoder::Destroy() {
     if (hEncoder && nvenc.nvEncDestroyEncoder) {
         nvenc.nvEncDestroyEncoder(hEncoder);
+        if (hEncoder && bitstreamBuffer) {
+        nvenc.nvEncDestroyBitstreamBuffer(hEncoder, bitstreamBuffer);
+        bitstreamBuffer = nullptr;
+    }
         hEncoder = nullptr;
     }
     if (hInstNvEnc) {
@@ -180,8 +193,6 @@ std::vector<uint8_t> NVENCEncoder::EncodeFrame(ID3D11Texture2D* pTexture) {
                 nvenc.nvEncUnlockBitstream(hEncoder, lockBitstream.outputBitstream);
             }
         }
-        // Уничтожаем временный буфер
-        nvenc.nvEncDestroyBitstreamBuffer(hEncoder, bitstreamBuffer);
     }
 
     // Обязательно отвязываем текстуру, чтобы DXGI мог писать в нее следующий кадр

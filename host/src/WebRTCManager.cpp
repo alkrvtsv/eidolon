@@ -12,7 +12,7 @@ WebRTCManager::~WebRTCManager() {}
 bool WebRTCManager::Init() {
     // 1. Настройка конфигурации сети для WebRTC
     rtc::Configuration config;
-    config.iceServers.clear();
+    config.iceServers.emplace_back("stun:stun.l.google.com:19302"); // ДОБАВЛЕНО (Проблема #5)
     config.enableIceTcp = false;
     
     // 2. Создаем ядро соединения
@@ -21,13 +21,16 @@ bool WebRTCManager::Init() {
     rtc::Description::Video media("video", rtc::Description::Direction::SendOnly);
     media.addH264Codec(96); 
     media.addSSRC(7777, "video-stream"); 
-    videoTrack = pc->addTrack(media);
+    
+    auto track = pc->addTrack(media);
 
-    // СТАЛО:
     auto rtpConfig = std::make_shared<rtc::RtpPacketizationConfig>(7777, "video", 96, 90000);
     auto packetizer = std::make_shared<rtc::H264RtpPacketizer>(rtc::H264RtpPacketizer::Separator::LongStartSequence, rtpConfig);
     
-    videoTrack->setMediaHandler(packetizer);
+    track->setMediaHandler(packetizer);
+    
+    // Сохраняем трек атомарно
+    videoTrack.store(track);
 
     // 3. Коллбек: Изменение состояния соединения
     pc->onStateChange([](rtc::PeerConnection::State state) {
@@ -89,13 +92,12 @@ void WebRTCManager::AddRemoteCandidate(const std::string& candidate, const std::
 }
 
 void WebRTCManager::SendVideoData(const std::vector<uint8_t>& data) {
-    // Если клиент подключился и канал открыт - отправляем байты!
-    if (videoTrack && videoTrack->isOpen()) {
-        // Конвертируем наш вектор uint8_t во внутренний формат rtc::binary
+    auto track = videoTrack.load(); // БЕЗОПАСНЫЙ СНИМОК (Проблема #1)
+    if (track && track->isOpen()) {
         rtc::binary sample(
             reinterpret_cast<const std::byte*>(data.data()), 
             reinterpret_cast<const std::byte*>(data.data() + data.size())
         );
-        videoTrack->send(sample);
+        track->send(sample);
     }
 }
