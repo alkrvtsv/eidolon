@@ -17,6 +17,7 @@ extern "C" {
 using json = nlohmann::json;
 
 int main() {
+    rtc::InitLogger(rtc::LogLevel::Verbose);
     SetConsoleOutputCP(CP_UTF8);
     rtc::InitLogger(rtc::LogLevel::Error); 
     

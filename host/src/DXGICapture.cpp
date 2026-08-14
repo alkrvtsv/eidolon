@@ -1,146 +1,158 @@
 #include "DXGICapture.h"
+#include <iostream>
+#include <thread>
+#include <string>
+
+#define NOMINMAX
+#include <windows.h>
+#include <dxgi1_2.h>
+
+using Microsoft::WRL::ComPtr;
 
 DXGICapture::DXGICapture() {}
-DXGICapture::~DXGICapture() {}
+
+DXGICapture::~DXGICapture() {
+    if (deskDupl) deskDupl.Reset();
+}
 
 bool DXGICapture::Init() {
-    HRESULT hr;
-
-    // 1. Создаем DXGI Factory для перебора видеокарт
+    // Фабрику тоже нужно пересоздавать каждый раз, чтобы видеть актуальный список после RDP
     ComPtr<IDXGIFactory1> factory;
-    hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), &factory);
-    if (FAILED(hr)) {
-        std::cerr << "[-] Ошибка создания DXGIFactory1." << std::endl;
-        return false;
-    }
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return false;
 
-    ComPtr<IDXGIAdapter1> selectedAdapter;
+    ComPtr<IDXGIOutputDuplication> newDupl;
+    ComPtr<ID3D11Device> bestDevice;
+    ComPtr<ID3D11DeviceContext> bestContext;
+    UINT chosenAdapter = 0, chosenOutput = 0;
+
+    std::cout << "[DXGI] Сканирование всех адаптеров и мониторов..." << std::endl;
+
     ComPtr<IDXGIAdapter1> adapter;
-    
-    // Перебираем все видеокарты в системе и ищем NVIDIA (Vendor ID = 0x10DE)
-    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
-        DXGI_ADAPTER_DESC1 desc;
-        adapter->GetDesc1(&desc);
-        
-        // Vendor ID NVIDIA равен 0x10DE
-        if (desc.VendorId == 0x10DE) {
-            selectedAdapter = adapter;
-            std::wcout << L"[+] Выбрана видеокарта: " << desc.Description << std::endl;
-            break;
+    for (UINT a = 0; factory->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; ++a) {
+        ComPtr<IDXGIOutput> output;
+        for (UINT o = 0; adapter->EnumOutputs(o, &output) != DXGI_ERROR_NOT_FOUND; ++o) {
+            DXGI_OUTPUT_DESC desc;
+            output->GetDesc(&desc);
+            if (!desc.AttachedToDesktop) continue;
+
+            // 1. Создаем D3D11 Device СТРОГО для текущего адаптера (чтобы избежать ошибки 80070057)
+            ComPtr<ID3D11Device> tempDevice;
+            ComPtr<ID3D11DeviceContext> tempContext;
+            D3D_FEATURE_LEVEL featureLevel;
+            D3D_FEATURE_LEVEL featureTypes[] = { D3D_FEATURE_LEVEL_11_0 };
+            
+            HRESULT hrD3D = D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, 
+                                              featureTypes, 1, D3D11_SDK_VERSION, 
+                                              &tempDevice, &featureLevel, &tempContext);
+            if (FAILED(hrD3D)) continue;
+
+            // 2. Получаем имена для диагностики
+            MONITORINFOEXW mi = { sizeof(mi) };
+            std::wstring deviceStr = L"";
+            std::string devName = "Unknown";
+            if (GetMonitorInfoW(desc.Monitor, &mi)) {
+                DISPLAY_DEVICEW dd = { sizeof(dd) };
+                if (EnumDisplayDevicesW(mi.szDevice, 0, &dd, 0)) {
+                    deviceStr = dd.DeviceString;
+                    std::wstring ws(dd.DeviceString);
+                    devName = std::string(ws.begin(), ws.end());
+                }
+            }
+
+            bool isVirtual = (deviceStr.find(L"Indirect") != std::wstring::npos) ||
+                             (deviceStr.find(L"Virtual") != std::wstring::npos) ||
+                             (deviceStr.find(L"Idd") != std::wstring::npos) ||
+                             (deviceStr.find(L"Parsec") != std::wstring::npos) ||
+                             (deviceStr.find(L"VDD") != std::wstring::npos) ||
+                             (deviceStr.find(L"MTT") != std::wstring::npos);
+
+            std::cout << "  -> Адаптер [" << a << "] Монитор [" << o << "]: " << devName 
+                      << (isVirtual ? " [ВИРТУАЛЬНЫЙ]" : "") << std::endl;
+
+            ComPtr<IDXGIOutput1> output1;
+            if (FAILED(output.As(&output1))) continue;
+
+            // 3. Тестируем дубликатор именно с тем D3D устройством, которое привязано к этой видеокарте
+            ComPtr<IDXGIOutputDuplication> duplTest;
+            HRESULT hr = output1->DuplicateOutput(tempDevice.Get(), &duplTest);
+            
+            if (SUCCEEDED(hr)) {
+                if (isVirtual) {
+                    newDupl = duplTest;
+                    bestDevice = tempDevice;
+                    bestContext = tempContext;
+                    chosenAdapter = a; chosenOutput = o;
+                    width = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
+                    height = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
+                    std::cout << "[+] Приоритетно выбран ВИРТУАЛЬНЫЙ монитор!" << std::endl;
+                    goto SearchDone; 
+                }
+
+                if (!newDupl) {
+                    newDupl = duplTest;
+                    bestDevice = tempDevice;
+                    bestContext = tempContext;
+                    chosenAdapter = a; chosenOutput = o;
+                    width = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
+                    height = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
+                }
+            } else {
+                std::cerr << "     [x] Ошибка DuplicateOutput (код " << std::hex << hr << std::dec << ")" << std::endl;
+            }
         }
     }
 
-    // Если NVIDIA не найдена явным образом, берем первый доступный адаптер
-    if (!selectedAdapter) {
-        factory->EnumAdapters1(0, &selectedAdapter);
-        std::cout << "[!] Видеокарта NVIDIA не найдена по VendorID, используется адаптер по умолчанию." << std::endl;
-    }
+SearchDone:
+    if (!newDupl) return false;
 
-    // 2. Создаем устройство DirectX 11 на выбранной видеокарте
-    D3D_FEATURE_LEVEL featureLevel;
-    hr = D3D11CreateDevice(
-        selectedAdapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0,
-        nullptr, 0, D3D11_SDK_VERSION, &d3dDevice, &featureLevel, &d3dContext
-    );
-
-    if (FAILED(hr)) {
-        std::cerr << "[-] Ошибка: Не удалось создать D3D11 Device." << std::endl;
-        return false;
-    }
-
-    // 3. Получаем монитор (EnumOutputs)
-    ComPtr<IDXGIOutput> dxgiOutput;
-    hr = selectedAdapter->EnumOutputs(0, &dxgiOutput);
-    if (FAILED(hr)) {
-        std::cerr << "[-] Ошибка: Монитор не найден на выбранном адаптере." << std::endl;
-        return false;
-    }
-
-    // Узнаем честное разрешение выбранного монитора
-    DXGI_OUTPUT_DESC outputDesc;
-    dxgiOutput->GetDesc(&outputDesc);
-    width = outputDesc.DesktopCoordinates.right - outputDesc.DesktopCoordinates.left;
-    height = outputDesc.DesktopCoordinates.bottom - outputDesc.DesktopCoordinates.top;
+    // Сохраняем успешные объекты
+    deskDupl = newDupl;
+    d3dDevice = bestDevice;
+    d3dContext = bestContext;
     
-    std::cout << "[+] Разрешение захвата: " << width << "x" << height << std::endl;
-
-    // 4. Создаем интерфейс дубликации экрана
-    ComPtr<IDXGIOutput1> dxgiOutput1;
-    hr = dxgiOutput.As(&dxgiOutput1);
-    if (FAILED(hr)) return false;
-
-    hr = dxgiOutput1->DuplicateOutput(d3dDevice.Get(), &deskDupl);
-    if (FAILED(hr)) {
-        std::cerr << "[-] Ошибка: Не удалось создать DuplicateOutput (Код: " << hr << ")." << std::endl;
-        return false;
-    }
-
-    std::cout << "[+] DXGI Desktop Duplication успешно инициализирован!" << std::endl;
+    std::cout << "[+] DXGI успешно захватил Адаптер " << chosenAdapter << " Монитор " << chosenOutput 
+              << " (" << width << "x" << height << ")" << std::endl;
     return true;
-}
-
-ID3D11Texture2D* DXGICapture::AcquireFrame() {
-    if (!deskDupl) return nullptr;
-
-    DXGI_OUTDUPL_FRAME_INFO frameInfo;
-    ComPtr<IDXGIResource> desktopResource;
-
-    HRESULT hr = deskDupl->AcquireNextFrame(250, &frameInfo, &desktopResource);
-
-    if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
-        return nullptr; 
-    }
-    else if (FAILED(hr)) {
-        if (hr == DXGI_ERROR_ACCESS_LOST) {
-            std::cerr << "[-] Потерян доступ к монитору. Попытка восстановления..." << std::endl;
-            Sleep(1000);
-            HandleAccessLost();
-        }
-        return nullptr;
-    }
-
-    // Достаем интерфейс текстуры из ресурса DXGI
-    ID3D11Texture2D* pTexture = nullptr;
-    hr = desktopResource->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&pTexture);
-    
-    // Обязательно освобождаем кадр (DXGI сам следит за памятью)
-    // deskDupl->ReleaseFrame();
-
-    if (FAILED(hr)) return nullptr;
-    
-    // Возвращаем текстуру (нужно будет вызвать Release() после кодирования)
-    return pTexture;
-}
-
-void DXGICapture::UnlockFrame() {
-    if (deskDupl) {
-        deskDupl->ReleaseFrame();
-    }
 }
 
 bool DXGICapture::HandleAccessLost() {
-    // Освобождаем сломанный интерфейс захвата
-    deskDupl.Reset(); 
+    if (deskDupl) deskDupl.Reset(); 
+    // Даем DWM (Оконному менеджеру Windows) целую секунду на перестроение экранов
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000)); 
+    
+    std::cout << "[-] Потерян доступ к монитору. Попытка восстановления..." << std::endl;
+    if (Init()) {
+        std::cout << "[+] Доступ к монитору успешно восстановлен!" << std::endl;
+        return true;
+    }
+    return false;
+}
 
-    // Заново получаем цепочку: Устройство -> Адаптер -> Монитор
-    ComPtr<IDXGIDevice> dxgiDevice;
-    if (FAILED(d3dDevice.As(&dxgiDevice))) return false;
-
-    ComPtr<IDXGIAdapter> dxgiAdapter;
-    if (FAILED(dxgiDevice->GetAdapter(&dxgiAdapter))) return false;
-
-    ComPtr<IDXGIOutput> dxgiOutput;
-    // Пытаемся получить первый монитор
-    if (FAILED(dxgiAdapter->EnumOutputs(0, &dxgiOutput))) return false;
-
-    ComPtr<IDXGIOutput1> dxgiOutput1;
-    if (FAILED(dxgiOutput.As(&dxgiOutput1))) return false;
-
-    // Создаем новый дубликатор
-    if (FAILED(dxgiOutput1->DuplicateOutput(d3dDevice.Get(), &deskDupl))) {
-        return false;
+ID3D11Texture2D* DXGICapture::AcquireFrame() {
+    if (!deskDupl) {
+        HandleAccessLost();
+        return nullptr;
     }
 
-    std::cout << "[+] Доступ к монитору успешно восстановлен!" << std::endl;
-    return true;
+    DXGI_OUTDUPL_FRAME_INFO frameInfo;
+    ComPtr<IDXGIResource> desktopResource;
+    HRESULT hr = deskDupl->AcquireNextFrame(500, &frameInfo, &desktopResource);
+    
+    if (hr == DXGI_ERROR_ACCESS_LOST) {
+        HandleAccessLost();
+        return nullptr;
+    }
+    if (hr == DXGI_ERROR_WAIT_TIMEOUT || FAILED(hr)) return nullptr;
+
+    ComPtr<ID3D11Texture2D> acquiredTexture;
+    if (FAILED(desktopResource.As(&acquiredTexture))) {
+        deskDupl->ReleaseFrame();
+        return nullptr;
+    }
+
+    return acquiredTexture.Detach();
+}
+
+void DXGICapture::UnlockFrame() {
+    if (deskDupl) deskDupl->ReleaseFrame();
 }

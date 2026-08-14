@@ -12,7 +12,8 @@ WebRTCManager::~WebRTCManager() {}
 bool WebRTCManager::Init() {
     // 1. Настройка конфигурации сети для WebRTC
     rtc::Configuration config;
-    config.iceServers.emplace_back("stun:stun.l.google.com:19302");
+    config.iceServers.clear();
+    config.enableIceTcp = false;
     
     // 2. Создаем ядро соединения
     pc = std::make_shared<rtc::PeerConnection>(config);

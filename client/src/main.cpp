@@ -71,8 +71,14 @@ int main(int argc, char* argv[]) {
         }
     });
 
-    std::cout << "[WS] Подключение к ws://127.0.0.1:8080..." << std::endl;
-    ws.open("ws://127.0.0.1:8080");
+    std::string serverIp = "192.168.1.13"; // <--- ЗАМЕНИ НА LAN IP ТВОЕГО ХОСТА!
+    if (argc > 1) {
+        serverIp = argv[1];
+    }
+    
+    std::string wsUrl = "ws://" + serverIp + ":8080";
+    std::cout << "[WS] Подключение к " << wsUrl << "..." << std::endl;
+    ws.open(wsUrl);
 
     bool running = true;
     SDL_Event event;

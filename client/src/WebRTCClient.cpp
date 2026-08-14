@@ -10,7 +10,8 @@ WebRTCClient::~WebRTCClient() {}
 
 bool WebRTCClient::Init() {
     rtc::Configuration config;
-    config.iceServers.emplace_back("stun:stun.l.google.com:19302");
+    config.iceServers.clear();
+    config.enableIceTcp = false;
     
     pc = std::make_shared<rtc::PeerConnection>(config);
 

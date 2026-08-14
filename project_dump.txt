@@ -1,0 +1,1720 @@
+=== СТРУКТУРА ПРОЕКТА ===
+eidolon/
+├── .gitignore
+├── CMakeLists.txt
+├── client
+│   ├── CMakeLists.txt
+│   └── src
+│       ├── FFmpegDecoder.cpp
+│       ├── FFmpegDecoder.h
+│       ├── WebRTCClient.cpp
+│       ├── WebRTCClient.h
+│       └── main.cpp
+├── common
+│   ├── CMakeLists.txt
+│   └── include
+├── host
+│   ├── CMakeLists.txt
+│   └── src
+│       ├── DXGICapture.cpp
+│       ├── DXGICapture.h
+│       ├── NVENCEncoder.cpp
+│       ├── NVENCEncoder.h
+│       ├── SignalingClient.cpp
+│       ├── SignalingClient.h
+│       ├── WebRTCManager.cpp
+│       ├── WebRTCManager.h
+│       ├── main.cpp
+│       └── nvenc
+│           └── nvEncodeAPI.h
+├── signaling
+│   ├── client_test.py
+│   ├── config
+│   │   └── server.json
+│   ├── main.py
+│   ├── requirements.txt
+│   └── test.py
+└── vcpkg.json
+
+==================================================
+
+=== СОДЕРЖИМОЕ ФАЙЛОВ ===
+
+1. *.gitignore*
+```
+# --- C++ / CMake ---
+build/
+out/
+bin/
+*.obj
+*.exe
+*.dll
+*.lib
+*.pdb
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+.cmake/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# --- IDEs & OS ---
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+.DS_Store
+Thumbs.db
+
+# --- Package Managers ---
+vcpkg/
+vcpkg_installed/
+
+# --- Project Specific ---
+# Игнорируем локальные конфиги, оставляя только шаблоны
+signaling/config/local_*.json
+```
+
+2. *CMakeLists.txt*
+```
+cmake_minimum_required(VERSION 3.15)
+project(LowLatencyStreamer VERSION 0.1)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# add_subdirectory(common)
+add_subdirectory(host)
+add_subdirectory(client)
+
+```
+
+3. *vcpkg.json*
+```
+{
+  "dependencies": [
+    {
+      "name": "libdatachannel",
+      "features": ["srtp"]
+    },
+    "sdl2",
+    "ffmpeg",
+    "nlohmann-json"
+  ]
+}
+```
+
+4. *client/CMakeLists.txt*
+```
+find_package(LibDataChannel CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
+find_package(SDL2 CONFIG REQUIRED)
+find_package(ffmpeg REQUIRED)
+
+add_executable(ClientWorker 
+    src/main.cpp 
+    src/FFmpegDecoder.cpp 
+    src/WebRTCClient.cpp
+)
+
+target_link_libraries(ClientWorker PRIVATE 
+    LibDataChannel::LibDataChannel
+    $<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>
+    $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
+    nlohmann_json::nlohmann_json
+    ${FFMPEG_LIBRARIES}
+)
+
+target_include_directories(ClientWorker PRIVATE ${FFMPEG_INCLUDE_DIRS})
+```
+
+5. *client/src/FFmpegDecoder.cpp*
+```
+#include "FFmpegDecoder.h"
+#include <iostream>
+
+FFmpegDecoder::FFmpegDecoder() {
+    packet = av_packet_alloc();
+    frame = av_frame_alloc();
+}
+
+FFmpegDecoder::~FFmpegDecoder() {
+    if (codecContext) avcodec_free_context(&codecContext);
+    if (packet) av_packet_free(&packet);
+    if (frame) av_frame_free(&frame);
+}
+
+bool FFmpegDecoder::Init() {
+    // 1. Ищем декодер H.264
+    codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+    if (!codec) {
+        std::cerr << "[-] FFmpeg: Декодер H.264 не найден!" << std::endl;
+        return false;
+    }
+
+    // 2. Создаем контекст (настройки)
+    codecContext = avcodec_alloc_context3(codec);
+    if (!codecContext) return false;
+
+    // Настраиваем под стриминг с минимальной задержкой
+    codecContext->flags |= AV_CODEC_FLAG_LOW_DELAY; // Без буферизации
+    codecContext->thread_count = 4;                 // Многопоточное декодирование
+
+    // 3. Запускаем ядро декодера
+    if (avcodec_open2(codecContext, codec, nullptr) < 0) {
+        std::cerr << "[-] FFmpeg: Не удалось открыть декодер." << std::endl;
+        return false;
+    }
+
+    std::cout << "[+] FFmpeg: H.264 декодер успешно инициализирован." << std::endl;
+    return true;
+}
+
+bool FFmpegDecoder::DecodeAndRender(const uint8_t* data, size_t size, SDL_Renderer* renderer, SDL_Texture** texture) {
+    // --- 1. ПАРСИНГ RTP-ЗАГОЛОВКА (Пропускаем транспортный слой) ---
+    if (size < 12) return false; // Слишком маленький пакет
+
+    uint8_t cc = data[0] & 0x0F;                // Количество CSRC (обычно 0)
+    bool has_extension = (data[0] & 0x10) != 0; // Есть ли расширение заголовка
+    size_t offset = 12 + cc * 4;                // Базовый размер RTP-заголовка
+
+    // Пропускаем расширения, если они есть
+    if (has_extension) {
+        if (size < offset + 4) return false;
+        uint16_t ext_len = (data[offset + 2] << 8) | data[offset + 3];
+        offset += 4 + ext_len * 4;
+    }
+
+    if (size <= offset) return false;
+
+    // Указываем на чистые данные H.264
+    const uint8_t* payload = data + offset;
+    size_t payload_size = size - offset;
+
+
+    // --- 2. РАБОТА С H.264 ПОЛЕЗНОЙ НАГРУЗКОЙ ---
+    uint8_t nal_type = payload[0] & 0x1F;
+    std::vector<uint8_t> readyFrames;
+
+    // 1. ФРАГМЕНТИРОВАННЫЙ КАДР (FU-A - Тип 28)
+    if (nal_type == 28) {
+        if (payload_size < 2) return false;
+        
+        uint8_t fu_header = payload[1];
+        bool is_start = fu_header & 0x80;
+        bool is_end = fu_header & 0x40;
+        uint8_t original_nal = (payload[0] & 0xE0) | (fu_header & 0x1F);
+
+        if (is_start) {
+            frameBuffer.clear();
+            frameBuffer.push_back(0x00);
+            frameBuffer.push_back(0x00);
+            frameBuffer.push_back(0x00);
+            frameBuffer.push_back(0x01);
+            frameBuffer.push_back(original_nal);
+            frameBuffer.insert(frameBuffer.end(), payload + 2, payload + payload_size);
+            return false; 
+        } else {
+            frameBuffer.insert(frameBuffer.end(), payload + 2, payload + payload_size);
+            if (is_end) {
+                readyFrames = frameBuffer; 
+            } else {
+                return false; 
+            }
+        }
+    } 
+    // 2. АГРЕГИРОВАННЫЙ ПАКЕТ (STAP-A - Тип 24)
+    else if (nal_type == 24) {
+        size_t stap_offset = 1; 
+        while (stap_offset + 2 <= payload_size) {
+            uint16_t nal_size = (payload[stap_offset] << 8) | payload[stap_offset + 1];
+            stap_offset += 2;
+            
+            if (stap_offset + nal_size > payload_size) break; 
+            
+            readyFrames.push_back(0x00);
+            readyFrames.push_back(0x00);
+            readyFrames.push_back(0x00);
+            readyFrames.push_back(0x01);
+            readyFrames.insert(readyFrames.end(), payload + stap_offset, payload + stap_offset + nal_size);
+            stap_offset += nal_size;
+        }
+    } 
+    // 3. ОБЫЧНЫЙ ОДИНОЧНЫЙ КАДР (Типы 1-23)
+    else if (nal_type >= 1 && nal_type <= 23) {
+        readyFrames.push_back(0x00);
+        readyFrames.push_back(0x00);
+        readyFrames.push_back(0x00);
+        readyFrames.push_back(0x01);
+        readyFrames.insert(readyFrames.end(), payload, payload + payload_size);
+    } 
+    else {
+        return false; 
+    }
+
+    if (readyFrames.empty()) return false;
+
+    // --- 3. ОТПРАВКА СКЛЕЕННОГО КАДРА В FFMPEG ---
+    packet->data = readyFrames.data();
+    packet->size = (int)readyFrames.size();
+
+    int response = avcodec_send_packet(codecContext, packet);
+    if (response < 0) return false;
+
+    response = avcodec_receive_frame(codecContext, frame);
+    
+    if (response == AVERROR(EAGAIN) || response == AVERROR_EOF) {
+        return false; 
+    } else if (response < 0) {
+        return false; 
+    }
+
+    if (!*texture || frame->width != codecContext->width || frame->height != codecContext->height) {
+        if (*texture) SDL_DestroyTexture(*texture);
+        
+        *texture = SDL_CreateTexture(
+            renderer,
+            SDL_PIXELFORMAT_IYUV, 
+            SDL_TEXTUREACCESS_STREAMING,
+            frame->width,
+            frame->height
+        );
+        std::cout << "[Video] ПЕРВЫЙ КАДР УСПЕШНО РАСКОДИРОВАН! Разрешение: " << frame->width << "x" << frame->height << std::endl;
+    }
+
+    SDL_UpdateYUVTexture(
+        *texture,
+        nullptr,
+        frame->data[0], frame->linesize[0],
+        frame->data[1], frame->linesize[1],
+        frame->data[2], frame->linesize[2]
+    );
+
+    return true;
+}
+```
+
+6. *client/src/FFmpegDecoder.h*
+```
+#pragma once
+#include <vector>
+#include <cstdint>
+#include <SDL2/SDL.h>
+
+// FFmpeg написан на чистом C, поэтому в C++ его нужно оборачивать так:
+extern "C" {
+#include <libavcodec/avcodec.h>
+}
+
+class FFmpegDecoder {
+public:
+    FFmpegDecoder();
+    ~FFmpegDecoder();
+
+    bool Init();
+    
+    // Принимает байты из сети, декодирует кадр и обновляет текстуру на видеокарте
+    bool DecodeAndRender(const uint8_t* data, size_t size, SDL_Renderer* renderer, SDL_Texture** texture);
+
+private:
+    const AVCodec* codec = nullptr;
+    AVCodecContext* codecContext = nullptr;
+    AVPacket* packet = nullptr;
+    AVFrame* frame = nullptr;
+    std::vector<uint8_t> frameBuffer;
+};
+```
+
+7. *client/src/main.cpp*
+```
+#include <iostream>
+#include <thread>
+#include <atomic>
+#include <mutex>
+#include <vector>
+#include <algorithm>
+#define NOMINMAX
+#include <windows.h>
+#include <SDL2/SDL.h>
+#include <nlohmann/json.hpp>
+#include <rtc/rtc.hpp>
+
+#include "FFmpegDecoder.h"
+#include "WebRTCClient.h"
+
+using json = nlohmann::json;
+
+int main(int argc, char* argv[]) {
+    rtc::InitLogger(rtc::LogLevel::Verbose);
+    SetConsoleOutputCP(CP_UTF8);
+    std::cout << "=== Запуск Eidolon Client ===" << std::endl;
+
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) {
+        std::cerr << "[-] Ошибка SDL: " << SDL_GetError() << std::endl;
+        return -1;
+    }
+
+    SDL_Window* window = SDL_CreateWindow(
+        "Eidolon Stream (Client)",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        1280, 720,
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN
+    );
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+    SDL_SetYUVConversionMode(SDL_YUV_CONVERSION_BT709);
+    SDL_Texture* texture = nullptr;
+
+    FFmpegDecoder decoder;
+    if (!decoder.Init()) return -1;
+
+    WebRTCClient webrtc;
+    if (!webrtc.Init()) return -1;
+
+    // --- ПОТОКОБЕЗОПАСНАЯ ОЧЕРЕДЬ ПАКЕТОВ ---
+    std::mutex queueMutex;
+    std::vector<std::vector<uint8_t>> packetQueue;
+
+    // Этот коллбек работает в фоновом сетевом потоке! Никакого рендера здесь.
+    webrtc.onVideoData = [&](const uint8_t* data, size_t size) {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        packetQueue.push_back(std::vector<uint8_t>(data, data + size));
+    };
+
+    rtc::WebSocket ws;
+    std::atomic<bool> wsConnected(false);
+
+    ws.onOpen([&]() {
+        wsConnected = true;
+        json reg = { {"type", "register"}, {"role", "client"} };
+        ws.send(reg.dump());
+        webrtc.CreateOffer();
+    });
+
+    webrtc.onLocalDescription = [&](const std::string& sdpStr) { if (wsConnected) ws.send(sdpStr); };
+    webrtc.onLocalCandidate = [&](const std::string& candStr) { if (wsConnected) ws.send(candStr); };
+
+    ws.onMessage([&](std::variant<rtc::binary, std::string> data) {
+        if (std::holds_alternative<std::string>(data)) {
+            auto msg = json::parse(std::get<std::string>(data));
+            if (msg["type"] == "answer") webrtc.SetRemoteDescription(msg["type"], msg["sdp"]);
+            else if (msg["type"] == "ice_candidate") webrtc.AddRemoteCandidate(msg["candidate"], msg["sdpMid"]);
+        }
+    });
+
+    std::string serverIp = "192.168.1.13"; // <--- ЗАМЕНИ НА LAN IP ТВОЕГО ХОСТА!
+    if (argc > 1) {
+        serverIp = argv[1];
+    }
+    
+    std::string wsUrl = "ws://" + serverIp + ":8080";
+    std::cout << "[WS] Подключение к " << wsUrl << "..." << std::endl;
+    ws.open(wsUrl);
+
+    bool running = true;
+    SDL_Event event;
+
+    // --- ГЛАВНЫЙ ЦИКЛ ПОТОКА (Main Thread) ---
+    while (running) {
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) running = false;
+        }
+
+        // 1. Мгновенно забираем ВСЕ накопившиеся пакеты (чтобы не тормозить сеть)
+        std::vector<std::vector<uint8_t>> localQueue;
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            std::swap(localQueue, packetQueue); // O(1) операция, сеть сразу свободна!
+        }
+
+        // 2. Скармливаем их декодеру со скоростью пулемета
+        bool frameUpdated = false;
+        for (const auto& pkt : localQueue) {
+            // Наш сборщик внутри DecodeAndRender сам поймет, когда куски сложатся в полный кадр
+            if (decoder.DecodeAndRender(pkt.data(), pkt.size(), renderer, &texture)) {
+                frameUpdated = true;
+            }
+        }
+
+        // 3. Отрисовываем кадр на экран ТОЛЬКО если картинка реально обновилась
+        if (frameUpdated) {
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+            SDL_RenderClear(renderer);
+
+            if (texture) {
+                int texW, texH, winW, winH;
+                SDL_QueryTexture(texture, nullptr, nullptr, &texW, &texH);
+                SDL_GetWindowSize(window, &winW, &winH);
+
+                // Вычисляем пропорции (Pillarboxing), чтобы окно не искажалось
+                float scale = std::min((float)winW / texW, (float)winH / texH);
+                
+                SDL_Rect dest;
+                dest.w = (int)(texW * scale);
+                dest.h = (int)(texH * scale);
+                dest.x = (winW - dest.w) / 2;
+                dest.y = (winH - dest.h) / 2;
+
+                SDL_RenderCopy(renderer, texture, nullptr, &dest);
+            }
+            SDL_RenderPresent(renderer);
+        }
+
+        // Крошечная пауза, чтобы не сжечь процессор. 
+        // Так как мы выгребаем очередь пачками, задержек больше не будет!
+        SDL_Delay(1); 
+    }
+
+    if (texture) SDL_DestroyTexture(texture);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+
+    return 0;
+}
+```
+
+8. *client/src/WebRTCClient.cpp*
+```
+#include "WebRTCClient.h"
+#include <nlohmann/json.hpp>
+#include <iostream>
+#include <rtc/h264rtpdepacketizer.hpp>
+
+using json = nlohmann::json;
+
+WebRTCClient::WebRTCClient() {}
+WebRTCClient::~WebRTCClient() {}
+
+bool WebRTCClient::Init() {
+    rtc::Configuration config;
+    config.iceServers.clear();
+    config.enableIceTcp = false;
+    config.bindAddress = "172.16.6.4";
+    
+    pc = std::make_shared<rtc::PeerConnection>(config);
+
+    rtc::Description::Video media("video", rtc::Description::Direction::RecvOnly);
+    media.addH264Codec(96);
+    media.addSSRC(7777, "video-stream");
+    
+    videoTrack = pc->addTrack(media);
+
+    videoTrack->onOpen([this]() {
+        std::cout << "[WebRTC] Видео-канал успешно открыт! Ждем кадры..." << std::endl;
+    });
+
+    // Прямой перехват байтов из медиа-потока WebRTC
+    videoTrack->onMessage([this](std::variant<rtc::binary, std::string> data) {
+        if (std::holds_alternative<rtc::binary>(data)) {
+            auto& bin = std::get<rtc::binary>(data);
+            const uint8_t* ptr = reinterpret_cast<const uint8_t*>(bin.data());
+            size_t size = bin.size();
+
+            if (onVideoData) {
+                onVideoData(ptr, size);
+            }
+        }
+    });
+
+    pc->onStateChange([](rtc::PeerConnection::State state) {
+        std::cout << "[WebRTC] Состояние соединения: " << state << std::endl;
+    });
+
+    pc->onLocalCandidate([this](rtc::Candidate candidate) {
+        json msg = {
+            {"type", "ice_candidate"},
+            {"candidate", candidate.candidate()},
+            {"sdpMid", candidate.mid()}
+        };
+        if (onLocalCandidate) onLocalCandidate(msg.dump());
+    });
+
+    pc->onLocalDescription([this](rtc::Description description) {
+        json msg = {
+            {"type", description.typeString()},
+            {"sdp", std::string(description)}
+        };
+        if (onLocalDescription) onLocalDescription(msg.dump());
+    });
+
+    std::cout << "[+] WebRTC Client успешно инициализирован." << std::endl;
+    return true;
+}
+
+void WebRTCClient::CreateOffer() {
+    std::cout << "[WebRTC] Создаем Offer для подключения к хосту..." << std::endl;
+    pc->setLocalDescription(); // libdatachannel сгенерирует Offer
+}
+
+void WebRTCClient::SetRemoteDescription(const std::string& type, const std::string& sdp) {
+    std::cout << "[WebRTC] Применяем Remote Description типа: " << type << std::endl;
+    pc->setRemoteDescription(rtc::Description(sdp, type));
+}
+
+void WebRTCClient::AddRemoteCandidate(const std::string& candidate, const std::string& mid) {
+    pc->addRemoteCandidate(rtc::Candidate(candidate, mid));
+}
+```
+
+9. *client/src/WebRTCClient.h*
+```
+#pragma once
+#include <rtc/rtc.hpp>
+#include <string>
+#include <functional>
+#include <memory>
+
+class WebRTCClient {
+public:
+    WebRTCClient();
+    ~WebRTCClient();
+
+    bool Init();
+    
+    // Коллбеки для отправки JSON-сообщений на сигнальный сервер
+    std::function<void(const std::string&)> onLocalDescription;
+    std::function<void(const std::string&)> onLocalCandidate;
+    
+    // Коллбек, который срабатывает, когда приходят сырые байты H.264 видеопотока
+    std::function<void(const uint8_t*, size_t)> onVideoData;
+
+    // Методы для обработки ответов от сервера
+    void SetRemoteDescription(const std::string& type, const std::string& sdp);
+    void AddRemoteCandidate(const std::string& candidate, const std::string& mid);
+
+    void CreateOffer();
+
+private:
+    std::shared_ptr<rtc::PeerConnection> pc;
+    std::shared_ptr<rtc::Track> videoTrack;
+};
+```
+
+10. *common/CMakeLists.txt*
+```
+
+```
+
+11. *host/CMakeLists.txt*
+```
+project(HostWorker)
+
+# Находим WebRTC и JSON
+find_package(LibDataChannel CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
+
+# Добавляем исходники для основного хоста
+add_executable(HostWorker 
+    src/main.cpp 
+    src/DXGICapture.cpp
+    src/SignalingClient.cpp 
+    src/WebRTCManager.cpp 
+    src/NVENCEncoder.cpp
+)
+
+# Подключаем библиотеки для основного хоста
+target_link_libraries(HostWorker PRIVATE
+    LibDataChannel::LibDataChannel 
+    nlohmann_json::nlohmann_json 
+    d3d11 
+    dxgi
+)
+
+# --- Тестовая утилита для проверки мониторов ---
+# Добавляем отдельный экзешник
+add_executable(ListMonitors src/ListMonitors.cpp)
+
+# Подключаем ТОЛЬКО системные библиотеки DirectX
+target_link_libraries(ListMonitors PRIVATE 
+    d3d11 
+    dxgi
+)
+```
+
+12. *host/src/DXGICapture.cpp*
+```
+#include "DXGICapture.h"
+#include <iostream>
+#include <thread>
+#include <string>
+
+#define NOMINMAX
+#include <windows.h>
+#include <dxgi1_2.h>
+
+using Microsoft::WRL::ComPtr;
+
+DXGICapture::DXGICapture() {}
+
+DXGICapture::~DXGICapture() {
+    if (deskDupl) deskDupl.Reset();
+}
+
+bool DXGICapture::Init() {
+    // Фабрику тоже нужно пересоздавать каждый раз, чтобы видеть актуальный список после RDP
+    ComPtr<IDXGIFactory1> factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return false;
+
+    ComPtr<IDXGIOutputDuplication> newDupl;
+    ComPtr<ID3D11Device> bestDevice;
+    ComPtr<ID3D11DeviceContext> bestContext;
+    UINT chosenAdapter = 0, chosenOutput = 0;
+
+    std::cout << "[DXGI] Сканирование всех адаптеров и мониторов..." << std::endl;
+
+    ComPtr<IDXGIAdapter1> adapter;
+    for (UINT a = 0; factory->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; ++a) {
+        ComPtr<IDXGIOutput> output;
+        for (UINT o = 0; adapter->EnumOutputs(o, &output) != DXGI_ERROR_NOT_FOUND; ++o) {
+            DXGI_OUTPUT_DESC desc;
+            output->GetDesc(&desc);
+            if (!desc.AttachedToDesktop) continue;
+
+            // 1. Создаем D3D11 Device СТРОГО для текущего адаптера (чтобы избежать ошибки 80070057)
+            ComPtr<ID3D11Device> tempDevice;
+            ComPtr<ID3D11DeviceContext> tempContext;
+            D3D_FEATURE_LEVEL featureLevel;
+            D3D_FEATURE_LEVEL featureTypes[] = { D3D_FEATURE_LEVEL_11_0 };
+            
+            HRESULT hrD3D = D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, 
+                                              featureTypes, 1, D3D11_SDK_VERSION, 
+                                              &tempDevice, &featureLevel, &tempContext);
+            if (FAILED(hrD3D)) continue;
+
+            // 2. Получаем имена для диагностики
+            MONITORINFOEXW mi = { sizeof(mi) };
+            std::wstring deviceStr = L"";
+            std::string devName = "Unknown";
+            if (GetMonitorInfoW(desc.Monitor, &mi)) {
+                DISPLAY_DEVICEW dd = { sizeof(dd) };
+                if (EnumDisplayDevicesW(mi.szDevice, 0, &dd, 0)) {
+                    deviceStr = dd.DeviceString;
+                    std::wstring ws(dd.DeviceString);
+                    devName = std::string(ws.begin(), ws.end());
+                }
+            }
+
+            bool isVirtual = (deviceStr.find(L"Indirect") != std::wstring::npos) ||
+                             (deviceStr.find(L"Virtual") != std::wstring::npos) ||
+                             (deviceStr.find(L"Idd") != std::wstring::npos) ||
+                             (deviceStr.find(L"Parsec") != std::wstring::npos) ||
+                             (deviceStr.find(L"VDD") != std::wstring::npos) ||
+                             (deviceStr.find(L"MTT") != std::wstring::npos);
+
+            std::cout << "  -> Адаптер [" << a << "] Монитор [" << o << "]: " << devName 
+                      << (isVirtual ? " [ВИРТУАЛЬНЫЙ]" : "") << std::endl;
+
+            ComPtr<IDXGIOutput1> output1;
+            if (FAILED(output.As(&output1))) continue;
+
+            // 3. Тестируем дубликатор именно с тем D3D устройством, которое привязано к этой видеокарте
+            ComPtr<IDXGIOutputDuplication> duplTest;
+            HRESULT hr = output1->DuplicateOutput(tempDevice.Get(), &duplTest);
+            
+            if (SUCCEEDED(hr)) {
+                if (isVirtual) {
+                    newDupl = duplTest;
+                    bestDevice = tempDevice;
+                    bestContext = tempContext;
+                    chosenAdapter = a; chosenOutput = o;
+                    width = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
+                    height = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
+                    std::cout << "[+] Приоритетно выбран ВИРТУАЛЬНЫЙ монитор!" << std::endl;
+                    goto SearchDone; 
+                }
+
+                if (!newDupl) {
+                    newDupl = duplTest;
+                    bestDevice = tempDevice;
+                    bestContext = tempContext;
+                    chosenAdapter = a; chosenOutput = o;
+                    width = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
+                    height = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
+                }
+            } else {
+                std::cerr << "     [x] Ошибка DuplicateOutput (код " << std::hex << hr << std::dec << ")" << std::endl;
+            }
+        }
+    }
+
+SearchDone:
+    if (!newDupl) return false;
+
+    // Сохраняем успешные объекты
+    deskDupl = newDupl;
+    d3dDevice = bestDevice;
+    d3dContext = bestContext;
+    
+    std::cout << "[+] DXGI успешно захватил Адаптер " << chosenAdapter << " Монитор " << chosenOutput 
+              << " (" << width << "x" << height << ")" << std::endl;
+    return true;
+}
+
+bool DXGICapture::HandleAccessLost() {
+    if (deskDupl) deskDupl.Reset(); 
+    // Даем DWM (Оконному менеджеру Windows) целую секунду на перестроение экранов
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000)); 
+    
+    std::cout << "[-] Потерян доступ к монитору. Попытка восстановления..." << std::endl;
+    if (Init()) {
+        std::cout << "[+] Доступ к монитору успешно восстановлен!" << std::endl;
+        return true;
+    }
+    return false;
+}
+
+ID3D11Texture2D* DXGICapture::AcquireFrame() {
+    if (!deskDupl) {
+        HandleAccessLost();
+        return nullptr;
+    }
+
+    DXGI_OUTDUPL_FRAME_INFO frameInfo;
+    ComPtr<IDXGIResource> desktopResource;
+    HRESULT hr = deskDupl->AcquireNextFrame(500, &frameInfo, &desktopResource);
+    
+    if (hr == DXGI_ERROR_ACCESS_LOST) {
+        HandleAccessLost();
+        return nullptr;
+    }
+    if (hr == DXGI_ERROR_WAIT_TIMEOUT || FAILED(hr)) return nullptr;
+
+    ComPtr<ID3D11Texture2D> acquiredTexture;
+    if (FAILED(desktopResource.As(&acquiredTexture))) {
+        deskDupl->ReleaseFrame();
+        return nullptr;
+    }
+
+    return acquiredTexture.Detach();
+}
+
+void DXGICapture::UnlockFrame() {
+    if (deskDupl) deskDupl->ReleaseFrame();
+}
+```
+
+13. *host/src/DXGICapture.h*
+```
+#pragma once
+#include <d3d11.h>
+#include <dxgi1_2.h>
+#include <wrl/client.h>
+#include <iostream>
+
+using Microsoft::WRL::ComPtr;
+
+class DXGICapture {
+public:
+    DXGICapture();
+    ~DXGICapture();
+
+    bool Init();
+    
+    // Новый метод для захвата одного кадра
+    ID3D11Texture2D* AcquireFrame();
+
+    void UnlockFrame();
+    
+    ID3D11Device* GetDevice() { return d3dDevice.Get(); }
+    uint32_t GetWidth() const { return width; }
+    uint32_t GetHeight() const { return height; }
+
+private:
+    ComPtr<ID3D11Device> d3dDevice;
+    ComPtr<ID3D11DeviceContext> d3dContext;
+    ComPtr<IDXGIOutputDuplication> deskDupl;
+
+    uint32_t width = 0;
+    uint32_t height = 0;
+
+    bool HandleAccessLost();
+};
+```
+
+14. *host/src/ListMonitors.cpp*
+```
+#include <iostream>
+#include <vector>
+#include <string>
+#include <windows.h>
+#include <d3d11.h>
+#include <dxgi1_2.h>
+#include <wrl/client.h>
+
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "dxgi.lib")
+
+using Microsoft::WRL::ComPtr;
+
+std::string WStringToString(const std::wstring& wstr) {
+    if (wstr.empty()) return std::string();
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
+    std::string strTo(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
+    return strTo;
+}
+
+int main() {
+    // Устанавливаем кодировку консоли
+    SetConsoleOutputCP(CP_UTF8);
+
+    std::cout << "==========================================\n";
+    std::cout << "    DXGI Monitor Enumeration Tool\n";
+    std::cout << "==========================================\n\n";
+
+    ComPtr<IDXGIFactory1> factory;
+    HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+    if (FAILED(hr)) {
+        std::cerr << "[-] Ошибка: Не удалось создать IDXGIFactory1. HRESULT: 0x" << std::hex << hr << std::endl;
+        return -1;
+    }
+
+    ComPtr<IDXGIAdapter1> adapter;
+    UINT adapterIndex = 0;
+    bool foundAnyMonitor = false;
+
+    // Перебираем видеокарты
+    while (factory->EnumAdapters1(adapterIndex, &adapter) != DXGI_ERROR_NOT_FOUND) {
+        DXGI_ADAPTER_DESC1 adapterDesc;
+        adapter->GetDesc1(&adapterDesc);
+        
+        std::string adapterName = WStringToString(adapterDesc.Description);
+        std::cout << "[Adapter " << adapterIndex << "] " << adapterName << "\n";
+        
+        double vramMB = (double)adapterDesc.DedicatedVideoMemory / (1024 * 1024);
+        std::cout << "  VRAM: " << vramMB << " MB\n";
+
+        ComPtr<ID3D11Device> d3dDevice;
+        D3D_FEATURE_LEVEL featureLevel;
+        D3D_FEATURE_LEVEL featureTypes[] = { D3D_FEATURE_LEVEL_11_0 };
+        HRESULT hrD3D = D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, 
+                                          featureTypes, 1, D3D11_SDK_VERSION, 
+                                          &d3dDevice, &featureLevel, nullptr);
+        
+        if (FAILED(hrD3D)) {
+             std::cout << "  -> (Не удалось создать D3D11 Device на этом адаптере. Пропускаем экраны)\n\n";
+             adapterIndex++;
+             continue;
+        }
+
+        ComPtr<IDXGIOutput> output;
+        UINT outputIndex = 0;
+        bool adapterHasMonitors = false;
+
+        // Перебираем мониторы
+        while (adapter->EnumOutputs(outputIndex, &output) != DXGI_ERROR_NOT_FOUND) {
+            adapterHasMonitors = true;
+            foundAnyMonitor = true;
+            
+            DXGI_OUTPUT_DESC desc;
+            output->GetDesc(&desc);
+
+            std::string outputName = WStringToString(desc.DeviceName);
+            int width = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
+            int height = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
+            
+            std::cout << "    [Monitor " << outputIndex << "] " << outputName << "\n";
+            std::cout << "      State:       " << (desc.AttachedToDesktop ? "Attached to Desktop (Active)" : "Disconnected") << "\n";
+            std::cout << "      Resolution:  " << width << "x" << height << "\n";
+
+            MONITORINFOEXW mi = { sizeof(mi) };
+            if (GetMonitorInfoW(desc.Monitor, &mi)) {
+                DISPLAY_DEVICEW dd = { sizeof(dd) };
+                if (EnumDisplayDevicesW(mi.szDevice, 0, &dd, 0)) {
+                    std::string deviceString = WStringToString(dd.DeviceString);
+                    std::cout << "      Driver Name: " << deviceString << "\n";
+                }
+            }
+
+            if (desc.AttachedToDesktop) {
+                ComPtr<IDXGIOutput1> output1;
+                if (SUCCEEDED(output.As(&output1))) {
+                    ComPtr<IDXGIOutputDuplication> duplTest;
+                    HRESULT dupHr = output1->DuplicateOutput(d3dDevice.Get(), &duplTest);
+                    if (SUCCEEDED(dupHr)) {
+                        std::cout << "      Duplication: SUCCESS (Ready for capture)\n";
+                    } else {
+                        std::cout << "      Duplication: FAILED (HRESULT: 0x" << std::hex << dupHr << std::dec << ")\n";
+                        if (dupHr == 0x80070057) std::cout << "                   -> E_INVALIDARG (Usually RDP block or wrong GPU)\n";
+                        if (dupHr == 0x80070005) std::cout << "                   -> E_ACCESSDENIED (Screen locked or UAC prompt)\n";
+                    }
+                }
+            }
+            std::cout << "\n";
+            outputIndex++;
+        }
+        
+        if (!adapterHasMonitors) {
+            std::cout << "    -> No monitors attached.\n\n";
+        }
+
+        adapterIndex++;
+    }
+
+    if (!foundAnyMonitor) {
+        std::cout << "[-] Ни одного монитора не найдено в системе!\n";
+    }
+
+    std::cout << "==========================================\n";
+    std::cout << "Press Enter to exit...\n";
+    std::cin.get();
+
+    return 0;
+}
+```
+
+15. *host/src/main.cpp*
+```
+#include <iostream>
+#include <windows.h>
+#include <thread>
+#include <chrono>
+#include <rtc/rtc.hpp>
+#include <nlohmann/json.hpp>
+#include "DXGICapture.h"
+#include "NVENCEncoder.h"    // <-- Подключаем кодировщик
+#include "SignalingClient.h"
+#include "WebRTCManager.h"
+
+extern "C" {
+    __declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
+    __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
+
+using json = nlohmann::json;
+
+int main() {
+    rtc::InitLogger(rtc::LogLevel::Verbose);
+    SetConsoleOutputCP(CP_UTF8);
+    rtc::InitLogger(rtc::LogLevel::Error); 
+    
+    std::cout << "=== Запуск Low-Latency Host Worker ===" << std::endl;
+
+    // 1. Инициализация DXGI
+    DXGICapture capturer;
+    if (!capturer.Init()) return -1;
+
+    // 2. Инициализация NVENC (Связываем с DXGI)
+    NVENCEncoder encoder;
+    if (!encoder.Init(capturer.GetDevice(), capturer.GetWidth(), capturer.GetHeight())) {
+        std::cerr << "[-] Критическая ошибка: Не удалось запустить NVENC." << std::endl;
+        return -1;
+    }
+
+    // 3. WebRTC и Сеть
+    WebRTCManager rtcManager;
+    if (!rtcManager.Init()) return -1;
+
+    SignalingClient signaling("ws://127.0.0.1:8080");
+
+    // Клей WebRTC -> Signaling
+    rtcManager.onLocalDescription = [&signaling](const std::string& msg) {
+        signaling.SendMsg(msg);
+    };
+    rtcManager.onLocalCandidate = [&signaling](const std::string& msg) {
+        signaling.SendMsg(msg);
+    };
+
+    // Клей Signaling -> WebRTC
+    signaling.onMessageReceived = [&rtcManager](const std::string& msg) {
+        try {
+            json data = json::parse(msg);
+            std::string type = data.value("type", "");
+            if (type == "offer") {
+                rtcManager.SetRemoteDescription(type, data["sdp"]);
+            }
+            else if (type == "ice_candidate") {
+                rtcManager.AddRemoteCandidate(data["candidate"], data["sdpMid"]);
+            }
+        } 
+        catch (const std::exception& e) {
+            std::cerr << "[-] Ошибка при обработке сообщения: " << e.what() << std::endl;
+        } 
+        catch (...) {
+            std::cerr << "[-] Критическая неизвестная ошибка в WebRTC!" << std::endl;
+        }
+    };
+
+    signaling.Connect();
+    std::cout << "[+] Ядро готово. Ожидание клиента..." << std::endl;
+    
+    while (true) {
+        // 1. Берем и блокируем кадр
+        ID3D11Texture2D* pTexture = capturer.AcquireFrame();
+        
+        if (pTexture) {
+            // 2. Сжимаем заблокированный кадр (Zero-Copy)
+            std::vector<uint8_t> encodedData = encoder.EncodeFrame(pTexture);
+            
+            // 3. Уничтожаем COM-указатель
+            pTexture->Release();
+
+            // 4. РАЗБЛОКИРУЕМ КАДР В DXGI! (Только после сжатия)
+            capturer.UnlockFrame();
+
+            // 5. Проверяем результат
+            if (!encodedData.empty()) {
+                // std::cout << "[Video] Кадр сжат! Размер: " << encodedData.size() << " байт." << std::endl;
+                
+                // ОТПРАВЛЯЕМ КАДР КЛИЕНТУ!
+                rtcManager.SendVideoData(encodedData);
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+
+    return 0;
+}
+```
+
+16. *host/src/NVENCEncoder.cpp*
+```
+#include "NVENCEncoder.h"
+#include <windows.h>
+
+NVENCEncoder::NVENCEncoder() : hInstNvEnc(nullptr), hEncoder(nullptr) {
+    memset(&nvenc, 0, sizeof(NV_ENCODE_API_FUNCTION_LIST));
+}
+
+NVENCEncoder::~NVENCEncoder() {
+    Destroy();
+}
+
+bool NVENCEncoder::LoadNvEncApi() {
+    // Подгружаем библиотеку драйвера NVIDIA (она всегда лежит в системе)
+    hInstNvEnc = LoadLibrary(TEXT("nvEncodeAPI64.dll"));
+    if (!hInstNvEnc) {
+        std::cerr << "[-] NVENC: Ошибка загрузки nvEncodeAPI64.dll. Установлен ли драйвер NVIDIA?" << std::endl;
+        return false;
+    }
+
+    // Ищем функцию создания инстанса
+    typedef NVENCSTATUS(NVENCAPI *NvEncodeAPICreateInstance_Type)(NV_ENCODE_API_FUNCTION_LIST*);
+    NvEncodeAPICreateInstance_Type NvEncodeAPICreateInstance = 
+        (NvEncodeAPICreateInstance_Type)GetProcAddress(hInstNvEnc, "NvEncodeAPICreateInstance");
+    
+    if (!NvEncodeAPICreateInstance) {
+        std::cerr << "[-] NVENC: Функция NvEncodeAPICreateInstance не найдена." << std::endl;
+        return false;
+    }
+
+    // Запрашиваем список всех доступных функций NVENC
+    nvenc.version = NV_ENCODE_API_FUNCTION_LIST_VER;
+    if (NvEncodeAPICreateInstance(&nvenc) != NV_ENC_SUCCESS) {
+        std::cerr << "[-] NVENC: Не удалось инициализировать NVENC API." << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool NVENCEncoder::Init(ID3D11Device* d3dDevice, uint32_t width, uint32_t height) {
+    frameWidth = width;
+    frameHeight = height;
+
+    if (!LoadNvEncApi()) return false;
+
+    // Параметры открытия сессии NVENC 
+    NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS sessionParams = { NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER };
+    sessionParams.device = d3dDevice;
+    sessionParams.deviceType = NV_ENC_DEVICE_TYPE_DIRECTX;
+    sessionParams.apiVersion = NVENCAPI_VERSION;
+
+    NVENCSTATUS status = nvenc.nvEncOpenEncodeSessionEx(&sessionParams, &hEncoder);
+    if (status != NV_ENC_SUCCESS) {
+        std::cerr << "[-] NVENC: Ошибка открытия сессии кодирования. Код: " << status << std::endl;
+        return false;
+    }
+
+    // 1. Настраиваем базовые параметры H.264 кодека
+    NV_ENC_INITIALIZE_PARAMS initParams;
+    memset(&initParams, 0, sizeof(initParams));
+    initParams.version = NV_ENC_INITIALIZE_PARAMS_VER;
+    initParams.encodeGUID = NV_ENC_CODEC_H264_GUID;
+    initParams.presetGUID = NV_ENC_PRESET_P3_GUID;          // Стабильный пресет P3
+    initParams.tuningInfo = NV_ENC_TUNING_INFO_LOW_LATENCY; // Стандартный Low Latency
+    
+    // Выравнивание разрешения
+    initParams.encodeWidth = frameWidth & ~1;   
+    initParams.encodeHeight = frameHeight & ~1;
+    initParams.darWidth = initParams.encodeWidth;
+    initParams.darHeight = initParams.encodeHeight;
+    
+    initParams.frameRateNum = 60;
+    initParams.frameRateDen = 1;
+    initParams.enableEncodeAsync = 0;
+    initParams.enablePTD = 1; 
+
+    // 2. Получаем дефолтный конфиг пресета 
+    // ЗДЕСЬ ИСПОЛЬЗУЕМ ФУНКЦИЮ С "Ex" НА КОНЦЕ!
+    NV_ENC_PRESET_CONFIG presetConfig;
+    memset(&presetConfig, 0, sizeof(presetConfig));
+    presetConfig.version = NV_ENC_PRESET_CONFIG_VER;
+    presetConfig.presetCfg.version = NV_ENC_CONFIG_VER;
+    
+    status = nvenc.nvEncGetEncodePresetConfigEx(hEncoder, initParams.encodeGUID, initParams.presetGUID, initParams.tuningInfo, &presetConfig);
+    if (status != NV_ENC_SUCCESS) {
+        std::cerr << "[-] NVENC: Ошибка получения пресета. Код: " << status << std::endl;
+        return false;
+    }
+
+    // 3. ЖЕСТКО задаем параметры битрейта и ключевых кадров
+    presetConfig.presetCfg.gopLength = 60; // 1 ключевой кадр каждую секунду (при 60 FPS)
+    presetConfig.presetCfg.frameIntervalP = 1;                    
+    
+    // ПРИНУДИТЕЛЬНО просим NVENC вставлять заголовки SPS и PPS в каждый ключевой кадр
+    presetConfig.presetCfg.encodeCodecConfig.h264Config.idrPeriod = 60;
+    presetConfig.presetCfg.encodeCodecConfig.h264Config.repeatSPSPPS = 1; 
+
+    presetConfig.presetCfg.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
+    presetConfig.presetCfg.rcParams.averageBitRate = 15000000;   
+    presetConfig.presetCfg.rcParams.maxBitRate = 15000000;
+    presetConfig.presetCfg.rcParams.vbvBufferSize = 1500000;     
+    presetConfig.presetCfg.rcParams.vbvInitialDelay = 750000;
+
+    initParams.encodeConfig = &presetConfig.presetCfg;
+
+    // 4. ИНИЦИАЛИЗИРУЕМ ЭНКОДЕР 
+    // ВОТ ФУНКЦИЯ, КОТОРАЯ БЫЛА УТЕРЯНА!
+    status = nvenc.nvEncInitializeEncoder(hEncoder, &initParams);
+    if (status != NV_ENC_SUCCESS) {
+        std::cerr << "[-] NVENC: Ошибка инициализации H.264 ядра. Код: " << status << std::endl;
+        return false;
+    }
+
+    std::cout << "[+] NVENC: Аппаратный кодировщик NVIDIA успешно инициализирован!" << std::endl;
+    return true;
+}
+
+void NVENCEncoder::Destroy() {
+    if (hEncoder && nvenc.nvEncDestroyEncoder) {
+        nvenc.nvEncDestroyEncoder(hEncoder);
+        hEncoder = nullptr;
+    }
+    if (hInstNvEnc) {
+        FreeLibrary(hInstNvEnc);
+        hInstNvEnc = nullptr;
+    }
+}
+
+std::vector<uint8_t> NVENCEncoder::EncodeFrame(ID3D11Texture2D* pTexture) {
+    std::vector<uint8_t> packetData;
+    if (!hEncoder || !pTexture) return packetData;
+
+    // 1. Регистрируем текстуру от DXGI в NVENC
+    memset(&registeredResource, 0, sizeof(registeredResource));
+    registeredResource.version = NV_ENC_REGISTER_RESOURCE_VER;
+    registeredResource.resourceType = NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX;
+    registeredResource.resourceToRegister = (void*)pTexture;
+    registeredResource.width = frameWidth;
+    registeredResource.height = frameHeight;
+    registeredResource.pitch = 0; // NVENC сам вычислит для D3D11 текстуры
+    registeredResource.bufferFormat = NV_ENC_BUFFER_FORMAT_ARGB; // Формат Windows Desktop
+    
+    if (nvenc.nvEncRegisterResource(hEncoder, &registeredResource) != NV_ENC_SUCCESS) {
+        return packetData; // Ошибка регистрации
+    }
+
+    // 2. Маппим (проецируем) ресурс для кодировщика
+    NV_ENC_MAP_INPUT_RESOURCE mapInputParams = { NV_ENC_MAP_INPUT_RESOURCE_VER };
+    mapInputParams.registeredResource = registeredResource.registeredResource;
+    nvenc.nvEncMapInputResource(hEncoder, &mapInputParams);
+
+    // 3. Создаем выходной буфер (куда видеокарта положит сжатые данные)
+    NV_ENC_CREATE_BITSTREAM_BUFFER bitstreamParams = { NV_ENC_CREATE_BITSTREAM_BUFFER_VER };
+    if (nvenc.nvEncCreateBitstreamBuffer(hEncoder, &bitstreamParams) == NV_ENC_SUCCESS) {
+        bitstreamBuffer = bitstreamParams.bitstreamBuffer;
+
+        // 4. Настраиваем параметры кадра (указываем, что это обычный кадр, без хитростей)
+        NV_ENC_PIC_PARAMS picParams = { NV_ENC_PIC_PARAMS_VER };
+        picParams.inputWidth = frameWidth;
+        picParams.inputHeight = frameHeight;
+        picParams.inputPitch = 0;
+        picParams.inputBuffer = mapInputParams.mappedResource;
+        picParams.outputBitstream = bitstreamBuffer;
+        picParams.bufferFmt = NV_ENC_BUFFER_FORMAT_ARGB;
+        picParams.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
+
+        // 5. КОДИРУЕМ! (Аппаратный вызов)
+        NVENCSTATUS status = nvenc.nvEncEncodePicture(hEncoder, &picParams);
+
+        if (status == NV_ENC_SUCCESS) {
+            // 6. Забираем сжатые байты (NAL units) из видеопамяти
+            NV_ENC_LOCK_BITSTREAM lockBitstream = { NV_ENC_LOCK_BITSTREAM_VER };
+            lockBitstream.outputBitstream = bitstreamBuffer;
+            if (nvenc.nvEncLockBitstream(hEncoder, &lockBitstream) == NV_ENC_SUCCESS) {
+                
+                // Копируем байты в наш std::vector для передачи в WebRTC
+                uint8_t* pData = (uint8_t*)lockBitstream.bitstreamBufferPtr;
+                packetData.assign(pData, pData + lockBitstream.bitstreamSizeInBytes);
+                
+                nvenc.nvEncUnlockBitstream(hEncoder, lockBitstream.outputBitstream);
+            }
+        }
+        // Уничтожаем временный буфер
+        nvenc.nvEncDestroyBitstreamBuffer(hEncoder, bitstreamBuffer);
+    }
+
+    // Обязательно отвязываем текстуру, чтобы DXGI мог писать в нее следующий кадр
+    nvenc.nvEncUnmapInputResource(hEncoder, mapInputParams.mappedResource);
+    nvenc.nvEncUnregisterResource(hEncoder, registeredResource.registeredResource);
+
+    return packetData;
+}
+```
+
+17. *host/src/NVENCEncoder.h*
+```
+#pragma once
+#include <d3d11.h>
+#include <wrl/client.h>
+#include "nvenc/nvEncodeAPI.h"
+#include <iostream>
+#include <vector>
+
+class NVENCEncoder {
+public:
+    NVENCEncoder();
+    ~NVENCEncoder();
+
+    bool Init(ID3D11Device* d3dDevice, uint32_t width, uint32_t height);
+    
+    // НОВЫЙ МЕТОД: Принимает текстуру от DXGI и возвращает сжатый NAL-пакет
+    std::vector<uint8_t> EncodeFrame(ID3D11Texture2D* pTexture);
+    
+    void Destroy();
+
+private:
+    HMODULE hInstNvEnc;
+    NV_ENCODE_API_FUNCTION_LIST nvenc;
+    void* hEncoder;
+
+    uint32_t frameWidth;
+    uint32_t frameHeight;
+
+    // Вспомогательные ресурсы для кодировщика
+    NV_ENC_REGISTER_RESOURCE registeredResource;
+    NV_ENC_OUTPUT_PTR bitstreamBuffer;
+
+    bool LoadNvEncApi();
+};
+```
+
+18. *host/src/SignalingClient.cpp*
+```
+#include "SignalingClient.h"
+
+SignalingClient::SignalingClient(const std::string& url) : serverUrl(url) {
+    ws = std::make_shared<rtc::WebSocket>();
+
+    ws->onOpen([this]() {
+        std::cout << "[Сигналинг] Соединение установлено!" << std::endl;
+        json regMsg = {{"type", "register"}, {"role", "host"}};
+        ws->send(regMsg.dump());
+    });
+
+    ws->onMessage([this](std::variant<rtc::binary, std::string> data) {
+        if (std::holds_alternative<std::string>(data)) {
+            std::string msg = std::get<std::string>(data);
+            std::cout << "[Сигналинг] Входящее сообщение: " << msg << std::endl;
+            
+            // Если коллбек назначен, передаем сообщение наверх
+            if (onMessageReceived) {
+                onMessageReceived(msg);
+            }
+        }
+    });
+
+    ws->onClosed([]() { std::cout << "[Сигналинг] Соединение закрыто." << std::endl; });
+    ws->onError([](const std::string& error) { std::cerr << "[-] Ошибка WebSocket: " << error << std::endl; });
+}
+
+SignalingClient::~SignalingClient() { Stop(); }
+
+void SignalingClient::Connect() { ws->open(serverUrl); }
+void SignalingClient::Stop() { if (ws) ws->close(); }
+
+// Реализация нового метода
+void SignalingClient::SendMsg(const std::string& message) { // Стало
+    if (ws && ws->isOpen()) {
+        ws->send(message);
+    }
+}
+```
+
+19. *host/src/SignalingClient.h*
+```
+#pragma once
+#include <rtc/rtc.hpp>
+#include <nlohmann/json.hpp>
+#include <string>
+#include <iostream>
+#include <memory>
+#include <functional> // Добавили для std::function
+
+using json = nlohmann::json;
+
+class SignalingClient {
+public:
+    SignalingClient(const std::string& url);
+    ~SignalingClient();
+
+    void Connect();
+    void Stop();
+    
+    // Новый метод для отправки сообщений на сервер
+    void SendMsg(const std::string& message);
+
+    // Коллбек для передачи полученных сообщений в main.cpp
+    std::function<void(const std::string&)> onMessageReceived;
+
+private:
+    std::string serverUrl;
+    std::shared_ptr<rtc::WebSocket> ws;
+};
+```
+
+20. *host/src/WebRTCManager.cpp*
+```
+#include "WebRTCManager.h"
+#include <nlohmann/json.hpp>
+#include <rtc/rtppacketizationconfig.hpp>
+#include <rtc/rtppacketizer.hpp>
+#include <rtc/h264rtppacketizer.hpp>
+
+using json = nlohmann::json;
+
+WebRTCManager::WebRTCManager() {}
+WebRTCManager::~WebRTCManager() {}
+
+bool WebRTCManager::Init() {
+    // 1. Настройка конфигурации сети для WebRTC
+    rtc::Configuration config;
+    config.iceServers.clear();
+    config.enableIceTcp = false;
+    
+    // 2. Создаем ядро соединения
+    pc = std::make_shared<rtc::PeerConnection>(config);
+
+    rtc::Description::Video media("video", rtc::Description::Direction::SendOnly);
+    media.addH264Codec(96); 
+    media.addSSRC(7777, "video-stream"); 
+    videoTrack = pc->addTrack(media);
+
+    // СТАЛО:
+    auto rtpConfig = std::make_shared<rtc::RtpPacketizationConfig>(7777, "video", 96, 90000);
+    auto packetizer = std::make_shared<rtc::H264RtpPacketizer>(rtc::H264RtpPacketizer::Separator::LongStartSequence, rtpConfig);
+    
+    videoTrack->setMediaHandler(packetizer);
+
+    // 3. Коллбек: Изменение состояния соединения
+    pc->onStateChange([](rtc::PeerConnection::State state) {
+        std::cout << "[WebRTC] Состояние соединения изменилось: " << state << std::endl;
+    });
+
+    // 4. Коллбек: Когда WebRTC находит наш локальный/публичный IP (ICE Candidate)
+    pc->onLocalCandidate([this](rtc::Candidate candidate) {
+        // Упаковываем кандидата в JSON для отправки клиенту
+        json msg = {
+            {"type", "ice_candidate"},
+            {"candidate", candidate.candidate()},
+            {"sdpMid", candidate.mid()}
+        };
+        // Передаем сформированную строку наверх (в SignalingClient)
+        if (onLocalCandidate) {
+            onLocalCandidate(msg.dump());
+        }
+    });
+
+    // 5. Коллбек: Когда WebRTC формирует SDP Offer или Answer (Описание медиапотока)
+    pc->onLocalDescription([this](rtc::Description description) {
+        json msg = {
+            {"type", description.typeString()},
+            {"sdp", std::string(description)}
+        };
+        if (onLocalDescription) {
+            onLocalDescription(msg.dump());
+        }
+    });
+
+    std::cout << "[+] WebRTC PeerConnection успешно инициализирован." << std::endl;
+    return true;
+}
+
+void WebRTCManager::SetRemoteDescription(const std::string& type, const std::string& sdp) {
+    // Если пришел новый offer - значит клиент переподключился. Убиваем старую сессию.
+    if (type == "offer") {
+        std::cout << "[WebRTC] Новый клиент (или переподключение)! Перезапускаем сессию..." << std::endl;
+        if (pc) {
+            pc->close(); // Закрываем старые порты UDP
+        }
+        Init(); // Заново создаем PeerConnection и видеотрек
+    }
+
+    std::cout << "[WebRTC] Применяем Remote Description типа: " << type << std::endl;
+    pc->setRemoteDescription(rtc::Description(sdp, type));
+    
+    if (type == "offer") {
+        std::cout << "[WebRTC] Offer получен. Генерируем Answer..." << std::endl;
+        pc->setLocalDescription(); 
+    }
+}
+
+void WebRTCManager::AddRemoteCandidate(const std::string& candidate, const std::string& mid) {
+    // Добавляем возможный сетевой маршрут к клиенту
+    pc->addRemoteCandidate(rtc::Candidate(candidate, mid));
+    std::cout << "[WebRTC] Добавлен Remote ICE Candidate." << std::endl;
+}
+
+void WebRTCManager::SendVideoData(const std::vector<uint8_t>& data) {
+    // Если клиент подключился и канал открыт - отправляем байты!
+    if (videoTrack && videoTrack->isOpen()) {
+        // Конвертируем наш вектор uint8_t во внутренний формат rtc::binary
+        rtc::binary sample(
+            reinterpret_cast<const std::byte*>(data.data()), 
+            reinterpret_cast<const std::byte*>(data.data() + data.size())
+        );
+        videoTrack->send(sample);
+    }
+}
+```
+
+21. *host/src/WebRTCManager.h*
+```
+#pragma once
+#include <rtc/rtc.hpp>
+#include <memory>
+#include <string>
+#include <functional>
+#include <iostream>
+
+class WebRTCManager {
+public:
+    WebRTCManager();
+    ~WebRTCManager();
+
+    bool Init();
+
+    // Методы для обработки входящих данных от Клиента
+    void SetRemoteDescription(const std::string& type, const std::string& sdp);
+    void AddRemoteCandidate(const std::string& candidate, const std::string& mid);
+
+    // Коллбеки для отправки наших данных наружу
+    std::function<void(const std::string&)> onLocalDescription;
+    std::function<void(const std::string&)> onLocalCandidate;
+
+    void SendVideoData(const std::vector<uint8_t>& data);
+
+private:
+    std::shared_ptr<rtc::PeerConnection> pc;
+    
+    // НОВАЯ ПЕРЕМЕННАЯ:
+    std::shared_ptr<rtc::Track> videoTrack; 
+};
+```
+
+22. *host/src/nvenc/nvEncodeAPI.h*
+```
+[Содержимое файла пропущено по условию]
+```
+
+23. *signaling/client_test.py*
+```
+import asyncio
+import websockets
+import json
+
+async def run_client():
+    uri = "ws://127.0.0.1:8080"
+    try:
+        async with websockets.connect(uri) as ws:
+            print("[Клиент] Подключился к серверу.")
+            
+            # 1. Регистрируемся как клиент
+            await ws.send(json.dumps({"type": "register", "role": "client"}))
+            print("[Клиент] Успешная регистрация.")
+            
+            # 2. Отправляем фейковый WebRTC Offer
+            fake_offer = {
+                "type": "offer",
+                "sdp": (
+                    "v=0\r\n"
+                    "o=- 1681234567 2 IN IP4 127.0.0.1\r\n"
+                    "s=-\r\n"
+                    "t=0 0\r\n"
+                    "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+                    "c=IN IP4 0.0.0.0\r\n"
+                    "a=setup:actpass\r\n"
+                    "a=mid:0\r\n"
+                    "a=recvonly\r\n"
+                    "a=ice-ufrag:testufrag123\r\n"
+                    "a=ice-pwd:testpassword123456789012\r\n"
+                    "a=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF\r\n"
+                    "a=rtpmap:96 H264/90000\r\n"
+                )
+            }
+            await ws.send(json.dumps(fake_offer))
+            print("[Клиент] SDP Offer отправлен. Жду ответа от C++ Хоста...")
+            
+            # 3. Ждем ответа (Answer) от C++
+            response = await ws.recv()
+            print(f"\n[УСПЕХ! Ответ от C++ получен]:\n{response[:200]}...")
+            
+    except Exception as e:
+        print(f"[-] Ошибка: {e}")
+
+if __name__ == "__main__":
+    asyncio.run(run_client())
+```
+
+24. *signaling/main.py*
+```
+import asyncio
+import json
+import logging
+import websockets
+import os
+
+# Настройка логирования
+logging.basicConfig(
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Простейшее хранилище для 1-к-1 соединения (PoC)
+connected_peers = {
+    "host": None,
+    "client": None
+}
+
+def load_config():
+    config_path = os.path.join(os.path.dirname(__file__), "config", "server.json")
+    try:
+        with open(config_path, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        logger.warning("Конфиг не найден, используем дефолтные настройки.")
+        return {"host": "0.0.0.0", "port": 8080}
+
+async def signaling_handler(websocket):
+    current_role = None
+    
+    try:
+        async for message in websocket:
+            data = json.loads(message)
+            msg_type = data.get("type")
+
+            # 1. Регистрация участника
+            if msg_type == "register":
+                role = data.get("role")
+                if role in connected_peers:
+                    connected_peers[role] = websocket
+                    current_role = role
+                    logger.info(f"Успешная регистрация: {role}")
+                else:
+                    logger.error(f"Неизвестная роль: {role}")
+                continue
+
+            # 2. Маршрутизация WebRTC сообщений
+            if current_role and msg_type in ["offer", "answer", "ice_candidate"]:
+                # Определяем получателя (если я host, шлем client'у и наоборот)
+                target_role = "client" if current_role == "host" else "host"
+                target_ws = connected_peers.get(target_role)
+
+                if target_ws:
+                    logger.info(f"Пересылка {msg_type} от {current_role} к {target_role}")
+                    await target_ws.send(message)
+                else:
+                    logger.warning(f"Получатель {target_role} не подключен. Сообщение {msg_type} отброшено.")
+
+    except websockets.ConnectionClosed:
+        logger.info(f"Соединение закрыто для роли: {current_role}")
+    finally:
+        # Очистка при отключении
+        if current_role and connected_peers[current_role] == websocket:
+            connected_peers[current_role] = None
+            logger.info(f"Роль освобождена: {current_role}")
+
+async def main():
+    config = load_config()
+    host = config["host"]
+    port = config["port"]
+
+    logger.info(f"Запуск сигнального сервера на ws://{host}:{port}")
+    
+    async with websockets.serve(signaling_handler, host, port):
+        await asyncio.Future()  # Бесконечный цикл работы сервера
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+25. *signaling/requirements.txt*
+```
+
+```
+
+26. *signaling/test.py*
+```
+import asyncio
+import websockets
+import json
+
+async def run_test():
+    uri = "ws://localhost:8080"
+    
+    print("Подключение к сигнальному серверу...")
+    # Открываем два независимых соединения: одно для хоста, другое для клиента
+    async with websockets.connect(uri) as ws_host, websockets.connect(uri) as ws_client:
+        
+        # 1. Регистрация ролей на сервере
+        await ws_host.send(json.dumps({"type": "register", "role": "host"}))
+        await ws_client.send(json.dumps({"type": "register", "role": "client"}))
+        print("[+] Хост и Клиент успешно зарегистрированы.")
+        
+        # Ждем секунду, чтобы сервер успел обработать регистрацию
+        await asyncio.sleep(0.5)
+        
+        # 2. Хост отправляет SDP Offer
+        offer_msg = {"type": "offer", "sdp": "v=0\r\no=- 12345 2 IN IP4 127.0.0.1\r\n..."}
+        await ws_host.send(json.dumps(offer_msg))
+        print(f"\n[Хост -> Сервер] Отправил: Offer")
+        
+        # 3. Клиент должен получить этот Offer
+        received_by_client = json.loads(await ws_client.recv())
+        print(f"[Сервер -> Клиент] Получил: {received_by_client['type']}")
+        
+        # 4. Клиент отправляет SDP Answer
+        answer_msg = {"type": "answer", "sdp": "v=0\r\no=- 67890 2 IN IP4 127.0.0.1\r\n..."}
+        await ws_client.send(json.dumps(answer_msg))
+        print(f"\n[Клиент -> Сервер] Отправил: Answer")
+        
+        # 5. Хост должен получить этот Answer
+        received_by_host = json.loads(await ws_host.recv())
+        print(f"[Сервер -> Хост] Получил: {received_by_host['type']}")
+        
+        print("\n[+] Тест успешно завершен! Сигнальный сервер маршрутизирует трафик корректно.")
+
+if __name__ == "__main__":
+    asyncio.run(run_test())
+```
+
+27. *signaling/config/server.json*
+```
+{
+    "host": "0.0.0.0",
+    "port": 8080,
+    "log_level": "INFO"
+}
+
+```
+
