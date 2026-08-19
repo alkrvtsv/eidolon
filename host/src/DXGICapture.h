@@ -13,7 +13,6 @@ public:
 
     bool Init();
     
-    // Новый метод для захвата одного кадра
     ID3D11Texture2D* AcquireFrame();
 
     void UnlockFrame();

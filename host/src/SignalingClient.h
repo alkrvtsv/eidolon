@@ -4,7 +4,7 @@
 #include <string>
 #include <iostream>
 #include <memory>
-#include <functional> // Добавили для std::function
+#include <functional> 
 
 using json = nlohmann::json;
 
@@ -16,10 +16,8 @@ public:
     void Connect();
     void Stop();
     
-    // Новый метод для отправки сообщений на сервер
     void SendMsg(const std::string& message);
 
-    // Коллбек для передачи полученных сообщений в main.cpp
     std::function<void(const std::string&)> onMessageReceived;
 
 private:

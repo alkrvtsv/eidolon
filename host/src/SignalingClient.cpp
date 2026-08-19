@@ -14,7 +14,6 @@ SignalingClient::SignalingClient(const std::string& url) : serverUrl(url) {
             std::string msg = std::get<std::string>(data);
             std::cout << "[Сигналинг] Входящее сообщение: " << msg << std::endl;
             
-            // Если коллбек назначен, передаем сообщение наверх
             if (onMessageReceived) {
                 onMessageReceived(msg);
             }
@@ -30,8 +29,7 @@ SignalingClient::~SignalingClient() { Stop(); }
 void SignalingClient::Connect() { ws->open(serverUrl); }
 void SignalingClient::Stop() { if (ws) ws->close(); }
 
-// Реализация нового метода
-void SignalingClient::SendMsg(const std::string& message) { // Стало
+void SignalingClient::SendMsg(const std::string& message) { 
     if (ws && ws->isOpen()) {
         ws->send(message);
     }

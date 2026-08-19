@@ -20,7 +20,6 @@ std::string WStringToString(const std::wstring& wstr) {
 }
 
 int main() {
-    // Устанавливаем кодировку консоли
     SetConsoleOutputCP(CP_UTF8);
 
     std::cout << "==========================================\n";
@@ -38,7 +37,6 @@ int main() {
     UINT adapterIndex = 0;
     bool foundAnyMonitor = false;
 
-    // Перебираем видеокарты
     while (factory->EnumAdapters1(adapterIndex, &adapter) != DXGI_ERROR_NOT_FOUND) {
         DXGI_ADAPTER_DESC1 adapterDesc;
         adapter->GetDesc1(&adapterDesc);
@@ -66,7 +64,6 @@ int main() {
         UINT outputIndex = 0;
         bool adapterHasMonitors = false;
 
-        // Перебираем мониторы
         while (adapter->EnumOutputs(outputIndex, &output) != DXGI_ERROR_NOT_FOUND) {
             adapterHasMonitors = true;
             foundAnyMonitor = true;

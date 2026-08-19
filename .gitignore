@@ -1,4 +1,3 @@
-# --- C++ / CMake ---
 build/
 out/
 bin/
@@ -11,16 +10,12 @@ CMakeCache.txt
 CMakeFiles/
 CMakeUserPresets.json
 .cmake/
-
-# --- Python ---
 __pycache__/
 *.py[cod]
 *$py.class
 venv/
 env/
 .env
-
-# --- IDEs & OS ---
 .vs/
 .vscode/
 .idea/
@@ -28,11 +23,6 @@ env/
 *.user
 .DS_Store
 Thumbs.db
-
-# --- Package Managers ---
 vcpkg/
 vcpkg_installed/
-
-# --- Project Specific ---
-# Игнорируем локальные конфиги, оставляя только шаблоны
 signaling/config/local_*.json

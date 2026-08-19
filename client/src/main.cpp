@@ -40,11 +40,9 @@ int main(int argc, char* argv[]) {
     WebRTCClient webrtc;
     if (!webrtc.Init()) return -1;
 
-    // --- ПОТОКОБЕЗОПАСНАЯ ОЧЕРЕДЬ ПАКЕТОВ ---
     std::mutex queueMutex;
     std::vector<std::vector<uint8_t>> packetQueue;
 
-    // Этот коллбек работает в фоновом сетевом потоке! Никакого рендера здесь.
     webrtc.onVideoData = [&](const uint8_t* data, size_t size) {
         std::lock_guard<std::mutex> lock(queueMutex);
         packetQueue.push_back(std::vector<uint8_t>(data, data + size));
@@ -75,7 +73,7 @@ int main(int argc, char* argv[]) {
         }
     });
 
-    std::string serverIp = "192.168.1.13"; // <--- ЗАМЕНИ НА LAN IP ТВОЕГО ХОСТА!
+    std::string serverIp = "192.168.1.13"; 
     if (argc > 1) {
         serverIp = argv[1];
     }
@@ -87,29 +85,24 @@ int main(int argc, char* argv[]) {
     bool running = true;
     SDL_Event event;
 
-    // --- ГЛАВНЫЙ ЦИКЛ ПОТОКА (Main Thread) ---
     while (running) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) running = false;
         }
 
-        // 1. Мгновенно забираем ВСЕ накопившиеся пакеты (чтобы не тормозить сеть)
         std::vector<std::vector<uint8_t>> localQueue;
         {
             std::lock_guard<std::mutex> lock(queueMutex);
-            std::swap(localQueue, packetQueue); // O(1) операция, сеть сразу свободна!
+            std::swap(localQueue, packetQueue); 
         }
 
-        // 2. Скармливаем их декодеру со скоростью пулемета
         bool frameUpdated = false;
         for (const auto& pkt : localQueue) {
-            // Наш сборщик внутри DecodeAndRender сам поймет, когда куски сложатся в полный кадр
             if (decoder.DecodeAndRender(pkt.data(), pkt.size(), renderer, &texture)) {
                 frameUpdated = true;
             }
         }
 
-        // 3. Отрисовываем кадр на экран ТОЛЬКО если картинка реально обновилась
         if (frameUpdated) {
             SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
             SDL_RenderClear(renderer);
@@ -119,7 +112,6 @@ int main(int argc, char* argv[]) {
                 SDL_QueryTexture(texture, nullptr, nullptr, &texW, &texH);
                 SDL_GetWindowSize(window, &winW, &winH);
 
-                // Вычисляем пропорции (Pillarboxing), чтобы окно не искажалось
                 float scale = std::min((float)winW / texW, (float)winH / texH);
                 
                 SDL_Rect dest;
@@ -133,8 +125,6 @@ int main(int argc, char* argv[]) {
             SDL_RenderPresent(renderer);
         }
 
-        // Крошечная пауза, чтобы не сжечь процессор. 
-        // Так как мы выгребаем очередь пачками, задержек больше не будет!
         SDL_Delay(1); 
     }
 

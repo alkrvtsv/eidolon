@@ -25,7 +25,6 @@ bool WebRTCClient::Init() {
         std::cout << "[WebRTC] Видео-канал успешно открыт! Ждем кадры..." << std::endl;
     });
 
-    // Прямой перехват байтов из медиа-потока WebRTC
     videoTrack->onMessage([this](std::variant<rtc::binary, std::string> data) {
         if (std::holds_alternative<rtc::binary>(data)) {
             auto& bin = std::get<rtc::binary>(data);
@@ -65,7 +64,7 @@ bool WebRTCClient::Init() {
 
 void WebRTCClient::CreateOffer() {
     std::cout << "[WebRTC] Создаем Offer для подключения к хосту..." << std::endl;
-    pc->setLocalDescription(); // libdatachannel сгенерирует Offer
+    pc->setLocalDescription(); 
 }
 
 void WebRTCClient::SetRemoteDescription(const std::string& type, const std::string& sdp) {

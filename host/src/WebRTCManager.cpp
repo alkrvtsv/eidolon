@@ -10,12 +10,10 @@ WebRTCManager::WebRTCManager() {}
 WebRTCManager::~WebRTCManager() {}
 
 bool WebRTCManager::Init() {
-    // 1. Настройка конфигурации сети для WebRTC
     rtc::Configuration config;
-    config.iceServers.emplace_back("stun:stun.l.google.com:19302"); // ДОБАВЛЕНО (Проблема #5)
+    config.iceServers.emplace_back("stun:stun.l.google.com:19302"); 
     config.enableIceTcp = false;
     
-    // 2. Создаем ядро соединения
     pc = std::make_shared<rtc::PeerConnection>(config);
 
     rtc::Description::Video media("video", rtc::Description::Direction::SendOnly);
@@ -29,29 +27,23 @@ bool WebRTCManager::Init() {
     
     track->setMediaHandler(packetizer);
     
-    // Сохраняем трек атомарно
     videoTrack.store(track);
 
-    // 3. Коллбек: Изменение состояния соединения
     pc->onStateChange([](rtc::PeerConnection::State state) {
         std::cout << "[WebRTC] Состояние соединения изменилось: " << state << std::endl;
     });
 
-    // 4. Коллбек: Когда WebRTC находит наш локальный/публичный IP (ICE Candidate)
     pc->onLocalCandidate([this](rtc::Candidate candidate) {
-        // Упаковываем кандидата в JSON для отправки клиенту
         json msg = {
             {"type", "ice_candidate"},
             {"candidate", candidate.candidate()},
             {"sdpMid", candidate.mid()}
         };
-        // Передаем сформированную строку наверх (в SignalingClient)
         if (onLocalCandidate) {
             onLocalCandidate(msg.dump());
         }
     });
 
-    // 5. Коллбек: Когда WebRTC формирует SDP Offer или Answer (Описание медиапотока)
     pc->onLocalDescription([this](rtc::Description description) {
         json msg = {
             {"type", description.typeString()},
@@ -67,13 +59,12 @@ bool WebRTCManager::Init() {
 }
 
 void WebRTCManager::SetRemoteDescription(const std::string& type, const std::string& sdp) {
-    // Если пришел новый offer - значит клиент переподключился. Убиваем старую сессию.
     if (type == "offer") {
         std::cout << "[WebRTC] Новый клиент (или переподключение)! Перезапускаем сессию..." << std::endl;
         if (pc) {
-            pc->close(); // Закрываем старые порты UDP
+            pc->close(); 
         }
-        Init(); // Заново создаем PeerConnection и видеотрек
+        Init(); 
     }
 
     std::cout << "[WebRTC] Применяем Remote Description типа: " << type << std::endl;
@@ -86,13 +77,12 @@ void WebRTCManager::SetRemoteDescription(const std::string& type, const std::str
 }
 
 void WebRTCManager::AddRemoteCandidate(const std::string& candidate, const std::string& mid) {
-    // Добавляем возможный сетевой маршрут к клиенту
     pc->addRemoteCandidate(rtc::Candidate(candidate, mid));
     std::cout << "[WebRTC] Добавлен Remote ICE Candidate." << std::endl;
 }
 
 void WebRTCManager::SendVideoData(const std::vector<uint8_t>& data) {
-    auto track = videoTrack.load(); // БЕЗОПАСНЫЙ СНИМОК (Проблема #1)
+    auto track = videoTrack.load(); 
     if (track && track->isOpen()) {
         rtc::binary sample(
             reinterpret_cast<const std::byte*>(data.data()), 

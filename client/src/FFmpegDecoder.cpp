@@ -37,7 +37,6 @@ bool FFmpegDecoder::Init() {
 bool FFmpegDecoder::DecodeAndRender(const uint8_t* data, size_t size, SDL_Renderer* renderer, SDL_Texture** texture) {
     if (size < 12) return false; 
 
-    // ИСПРАВЛЕНИЕ: Проверка потерь пакетов по Sequence Number (Проблема #7)
     uint16_t seq = (data[2] << 8) | data[3];
     if (haveExpected && seq != expectedSeq) {
         std::cerr << "[!] Потерян пакет. Ожидался: " << expectedSeq << ", получен: " << seq << ". Сброс кадра." << std::endl;
@@ -60,7 +59,6 @@ bool FFmpegDecoder::DecodeAndRender(const uint8_t* data, size_t size, SDL_Render
 
     const uint8_t* payload = data + offset;
     size_t payload_size = size - offset;
-
 
     uint8_t nal_type = payload[0] & 0x1F;
     std::vector<uint8_t> readyFrames;
@@ -122,7 +120,6 @@ bool FFmpegDecoder::DecodeAndRender(const uint8_t* data, size_t size, SDL_Render
 
     bool frameUpdated = false;
 
-    // ИСПРАВЛЕНИЕ: Выгребаем все доступные кадры в цикле (Проблема #6)
     while (response >= 0) {
         response = avcodec_receive_frame(codecContext, frame);
         

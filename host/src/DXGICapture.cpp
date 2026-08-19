@@ -16,7 +16,6 @@ DXGICapture::~DXGICapture() {
 }
 
 bool DXGICapture::Init() {
-    // Фабрику тоже нужно пересоздавать каждый раз, чтобы видеть актуальный список после RDP
     ComPtr<IDXGIFactory1> factory;
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return false;
 
@@ -35,7 +34,6 @@ bool DXGICapture::Init() {
             output->GetDesc(&desc);
             if (!desc.AttachedToDesktop) continue;
 
-            // 1. Создаем D3D11 Device СТРОГО для текущего адаптера (чтобы избежать ошибки 80070057)
             ComPtr<ID3D11Device> tempDevice;
             ComPtr<ID3D11DeviceContext> tempContext;
             D3D_FEATURE_LEVEL featureLevel;
@@ -46,7 +44,6 @@ bool DXGICapture::Init() {
                                               &tempDevice, &featureLevel, &tempContext);
             if (FAILED(hrD3D)) continue;
 
-            // 2. Получаем имена для диагностики
             MONITORINFOEXW mi = { sizeof(mi) };
             std::wstring deviceStr = L"";
             std::string devName = "Unknown";
@@ -72,7 +69,6 @@ bool DXGICapture::Init() {
             ComPtr<IDXGIOutput1> output1;
             if (FAILED(output.As(&output1))) continue;
 
-            // 3. Тестируем дубликатор именно с тем D3D устройством, которое привязано к этой видеокарте
             ComPtr<IDXGIOutputDuplication> duplTest;
             HRESULT hr = output1->DuplicateOutput(tempDevice.Get(), &duplTest);
             
@@ -105,7 +101,6 @@ bool DXGICapture::Init() {
 SearchDone:
     if (!newDupl) return false;
 
-    // Сохраняем успешные объекты
     deskDupl = newDupl;
     d3dDevice = bestDevice;
     d3dContext = bestContext;
@@ -117,7 +112,6 @@ SearchDone:
 
 bool DXGICapture::HandleAccessLost() {
     if (deskDupl) deskDupl.Reset(); 
-    // Даем DWM (Оконному менеджеру Windows) целую секунду на перестроение экранов
     std::this_thread::sleep_for(std::chrono::milliseconds(1000)); 
     
     std::cout << "[-] Потерян доступ к монитору. Попытка восстановления..." << std::endl;

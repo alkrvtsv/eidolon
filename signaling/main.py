@@ -24,15 +24,13 @@ async def signaling_handler(websocket):
             data = json.loads(message)
             msg_type = data.get("type")
 
-            # 1. Регистрация участника
             if msg_type == "register":
                 role = data.get("role")
                 if role in connected_peers:
-                    # ЗАЩИТА: Проверяем, не занята ли роль
                     if connected_peers[role] is not None:
                         logger.warning(f"Отказ: Роль {role} уже занята.")
                         await websocket.send(json.dumps({"type": "error", "message": "role_taken"}))
-                        return # Закрываем соединение самозванцу
+                        return 
                     
                     connected_peers[role] = websocket
                     current_role = role
@@ -41,7 +39,6 @@ async def signaling_handler(websocket):
                     logger.error(f"Неизвестная роль: {role}")
                 continue
 
-            # 2. Маршрутизация WebRTC сообщений
             if current_role and msg_type in ["offer", "answer", "ice_candidate"]:
                 target_role = "client" if current_role == "host" else "host"
                 target_ws = connected_peers.get(target_role)
@@ -64,7 +61,6 @@ async def main():
     host, port = config["host"], config["port"]
     logger.info(f"Запуск сигнального сервера на ws://{host}:{port}")
     
-    # ДОБАВЛЕНО: ping_interval и ping_timeout для разрыва зависших TCP-сессий
     async with websockets.serve(signaling_handler, host, port, ping_interval=20, ping_timeout=20):
         await asyncio.Future()
 
