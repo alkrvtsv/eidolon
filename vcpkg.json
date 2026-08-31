@@ -1,9 +1,12 @@
 {
+  "name": "eidolon",
+  "version-string": "0.1.0",
   "dependencies": [
     {
       "name": "libdatachannel",
       "features": ["srtp"]
     },
+    "opus",
     "sdl2",
     "ffmpeg",
     "nlohmann-json"

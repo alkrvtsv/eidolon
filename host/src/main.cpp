@@ -1,86 +1,143 @@
+#include "protocol.h"
+#include "spsc_queue.h"
+#include "mmcss.h"
+#include "capture/dxgi_capturer.h"
+#include "color_converter/d3d11_video_processor.h"
+#include "encoder/nvenc_encoder.h"
+#include "audio/wasapi_opus_capturer.h"
+#include "input/windows_input_injector.h"
+#include "network/signaling_client.h"
+#include "network/webrtc_streamer.h"
 #include <iostream>
-#include <windows.h>
 #include <thread>
-#include <chrono>
-#include <rtc/rtc.hpp>
-#include <nlohmann/json.hpp>
-#include "DXGICapture.h"
-#include "NVENCEncoder.h"    
-#include "SignalingClient.h"
-#include "WebRTCManager.h"
-
-extern "C" {
-    __declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
-    __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
-}
-
-using json = nlohmann::json;
+#include <atomic>
 
 int main() {
-    rtc::InitLogger(rtc::LogLevel::Verbose);
-    SetConsoleOutputCP(CP_UTF8);
-    rtc::InitLogger(rtc::LogLevel::Error); 
-    
-    std::cout << "=== Запуск Low-Latency Host Worker ===" << std::endl;
+    MMCSSScopedTask mmcss(L"Games");
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 
-    DXGICapture capturer;
-    if (!capturer.Init()) return -1;
-
-    NVENCEncoder encoder;
-    if (!encoder.Init(capturer.GetDevice(), capturer.GetWidth(), capturer.GetHeight())) {
-        std::cerr << "[-] Критическая ошибка: Не удалось запустить NVENC." << std::endl;
+    DXGICapturer capturer;
+    if (!capturer.Initialize()) {
         return -1;
     }
 
-    WebRTCManager rtcManager;
-    if (!rtcManager.Init()) return -1;
+    D3D11VideoProcessorConverter converter;
+    if (!converter.Initialize(capturer.GetDevice(), capturer.GetContext(), capturer.GetWidth(), capturer.GetHeight())) {
+        return -1;
+    }
+
+    EncoderConfig encConfig;
+    encConfig.width = capturer.GetWidth();
+    encConfig.height = capturer.GetHeight();
+    encConfig.frameRateNum = 60;
+    encConfig.frameRateDen = 1;
+    encConfig.bitRate = 15'000'000;
+    encConfig.maxBitRate = 15'000'000;
+    encConfig.vbvBufferSize = 1'500'000;
+    encConfig.enableIntraRefresh = true;
+
+    NVENCEncoder encoder;
+    if (!encoder.Initialize(capturer.GetDevice(), encConfig)) {
+        return -1;
+    }
+
+    WasapiOpusCapturer audioCapturer;
+    if (!audioCapturer.Initialize()) {
+        return -1;
+    }
+
+    WindowsInputInjector inputInjector;
+    if (!inputInjector.Initialize()) {
+        return -1;
+    }
+
+    WebRTCStreamer streamer;
+    if (!streamer.Initialize()) {
+        return -1;
+    }
 
     SignalingClient signaling("ws://127.0.0.1:8080");
+    signaling.SetOnMessageCallback([&](const std::string& msg) {
+        streamer.ProcessSignalingMessage(msg);
+    });
 
-    rtcManager.onLocalDescription = [&signaling](const std::string& msg) {
-        signaling.SendMsg(msg);
-    };
-    rtcManager.onLocalCandidate = [&signaling](const std::string& msg) {
-        signaling.SendMsg(msg);
-    };
+    streamer.SetSignalingSender([&](const std::string& msg) {
+        signaling.SendMessage(msg);
+    });
 
-    signaling.onMessageReceived = [&rtcManager](const std::string& msg) {
-        try {
-            json data = json::parse(msg);
-            std::string type = data.value("type", "");
-            if (type == "offer") {
-                rtcManager.SetRemoteDescription(type, data["sdp"]);
-            }
-            else if (type == "ice_candidate") {
-                rtcManager.AddRemoteCandidate(data["candidate"], data["sdpMid"]);
-            }
-        } 
-        catch (const std::exception& e) {
-            std::cerr << "[-] Ошибка при обработке сообщения: " << e.what() << std::endl;
-        } 
-        catch (...) {
-            std::cerr << "[-] Критическая неизвестная ошибка в WebRTC!" << std::endl;
+    encoder.SetEncodedFrameCallback([&](const uint8_t* data, size_t size) {
+        streamer.SendVideoFrame(data, size);
+    });
+
+    audioCapturer.SetEncodedAudioCallback([&](const uint8_t* data, size_t size) {
+        streamer.SendAudioFrame(data, size);
+    });
+
+    capturer.SetCursorShapeCallback([&](const CursorShapeMessage& shape, const uint8_t* data) {
+        streamer.SendCursorShape(shape, data);
+    });
+
+    capturer.SetCursorPositionCallback([&](const CursorPositionMessage& pos) {
+        streamer.SendCursorPosition(pos);
+    });
+
+    std::atomic<bool> forceIDR{false};
+    streamer.SetControlCallback([&](ControlCommandType cmd) {
+        if (cmd == ControlCommandType::RequestIDR) {
+            forceIDR = true;
         }
-    };
+    });
+
+    streamer.SetInputCallback([&](const uint8_t* data, size_t size) {
+        if (size < sizeof(MessageType)) return;
+        auto type = *reinterpret_cast<const MessageType*>(data);
+
+        if (type == MessageType::InputMouseRelative && size >= sizeof(MouseRelativeMessage)) {
+            const auto* msg = reinterpret_cast<const MouseRelativeMessage*>(data);
+            inputInjector.InjectMouseRelative(msg->deltaX, msg->deltaY);
+        } else if (type == MessageType::InputMouseButton && size >= sizeof(MouseButtonMessage)) {
+            const auto* msg = reinterpret_cast<const MouseButtonMessage*>(data);
+            inputInjector.InjectMouseButton(msg->button, msg->pressed != 0);
+        } else if (type == MessageType::InputKeyboard && size >= sizeof(KeyboardMessage)) {
+            const auto* msg = reinterpret_cast<const KeyboardMessage*>(data);
+            inputInjector.InjectKeyboard(msg->vkCode, msg->pressed != 0);
+        }
+    });
 
     signaling.Connect();
-    std::cout << "[+] Ядро готово. Ожидание клиента..." << std::endl;
-    
-    while (true) {
-        ID3D11Texture2D* pTexture = capturer.AcquireFrame();
-        
-        if (pTexture) {
-            std::vector<uint8_t> encodedData = encoder.EncodeFrame(pTexture);
-            
-            pTexture->Release();
+    audioCapturer.Start();
 
-            capturer.UnlockFrame();
+    bool running = true;
+    while (running) {
+        ID3D11Texture2D* capturedTexture = nullptr;
+        CaptureStatus status = capturer.AcquireFrame(&capturedTexture, 16);
 
-            if (!encodedData.empty()) {
-                rtcManager.SendVideoData(encodedData);
+        if (status == CaptureStatus::AccessLost) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            capturer.Initialize();
+            converter.Initialize(capturer.GetDevice(), capturer.GetContext(), capturer.GetWidth(), capturer.GetHeight());
+            encoder.Initialize(capturer.GetDevice(), encConfig);
+            continue;
+        }
+
+        if (status == CaptureStatus::Success && capturedTexture) {
+            ID3D11Texture2D* nv12Texture = nullptr;
+            if (converter.Convert(capturedTexture, &nv12Texture)) {
+                bool needIDR = forceIDR.exchange(false);
+                encoder.EncodeFrame(nv12Texture, needIDR);
+                nv12Texture->Release();
             }
+            capturedTexture->Release();
+            capturer.ReleaseFrame();
         }
     }
+
+    audioCapturer.Stop();
+    signaling.Disconnect();
+    streamer.Shutdown();
+    encoder.Shutdown();
+    converter.Shutdown();
+    capturer.Shutdown();
 
     return 0;
 }
