@@ -12,9 +12,13 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <windows.h>
 
 int main() {
     rtc::InitLogger(rtc::LogLevel::Warning);
+
+    // Запрещаем Windows гасить монитор и уходить в спящий режим
+    SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
 
     MMCSSScopedTask mmcss(L"Games");
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
@@ -75,6 +79,7 @@ int main() {
     std::atomic<bool> forceIDR{true};
     streamer.SetControlCallback([&](ControlCommandType cmd) {
         if (cmd == ControlCommandType::RequestIDR) {
+            std::cout << "[Host] IDR Keyframe requested" << std::endl;
             forceIDR = true;
         }
     });
@@ -89,13 +94,21 @@ int main() {
         } else if (type == MessageType::InputMouseButton && size >= sizeof(MouseButtonMessage)) {
             const auto* msg = reinterpret_cast<const MouseButtonMessage*>(data);
             inputInjector.InjectMouseButton(msg->button, msg->pressed != 0);
+        } else if (type == MessageType::InputMouseWheel && size >= sizeof(MouseWheelMessage)) {
+            const auto* msg = reinterpret_cast<const MouseWheelMessage*>(data);
+            inputInjector.InjectMouseWheel(msg->deltaX, msg->deltaY);
         } else if (type == MessageType::InputKeyboard && size >= sizeof(KeyboardMessage)) {
             const auto* msg = reinterpret_cast<const KeyboardMessage*>(data);
             inputInjector.InjectKeyboard(msg->vkCode, msg->pressed != 0);
         }
     });
 
+    std::atomic<uint64_t> sentFrames{0};
     encoder.SetEncodedFrameCallback([&](const uint8_t* data, size_t size) {
+        sentFrames++;
+        if (sentFrames == 1 || sentFrames % 120 == 0) {
+            std::cout << "[Host Pipeline] Sent Frame #" << sentFrames << " (" << size << " bytes)" << std::endl;
+        }
         streamer.SendVideoFrame(data, size);
     });
 
@@ -118,11 +131,24 @@ int main() {
     ComPtr<ID3D11Texture2D> lastValidNV12;
     auto lastFrameTime = std::chrono::steady_clock::now();
 
+    // Создаем резервный пустой NV12 кадр на случай старта в покое
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = capturer.GetWidth();
+    desc.Height = capturer.GetHeight();
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_NV12;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    capturer.GetDevice()->CreateTexture2D(&desc, nullptr, lastValidNV12.GetAddressOf());
+
     while (true) {
         ID3D11Texture2D* capturedTexture = nullptr;
         CaptureStatus status = capturer.AcquireFrame(&capturedTexture, 16);
 
         if (status == CaptureStatus::AccessLost) {
+            std::cout << "[Host] Access Lost -> Re-initializing..." << std::endl;
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             capturer.Initialize();
             converter.Initialize(capturer.GetDevice(), capturer.GetContext(), capturer.GetWidth(), capturer.GetHeight());
@@ -146,7 +172,7 @@ int main() {
             capturer.ReleaseFrame();
         } else {
             auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFrameTime).count();
-            if (lastValidNV12 && (forceIDR.load() || elapsedMs >= 33)) {
+            if (lastValidNV12 && (forceIDR.load() || elapsedMs >= 16)) {
                 bool needIDR = forceIDR.exchange(false);
                 encoder.EncodeFrame(lastValidNV12.Get(), needIDR);
                 lastFrameTime = now;
