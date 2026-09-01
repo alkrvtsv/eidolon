@@ -48,7 +48,7 @@ void SignalingClient::Disconnect() noexcept {
     }
 }
 
-void SignalingClient::SendMessage(const std::string& message) {
+void SignalingClient::SendText(const std::string& message) {
     if (ws_ && ws_->isOpen()) {
         ws_->send(message);
     }

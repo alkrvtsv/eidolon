@@ -6,6 +6,11 @@ find_package(nlohmann_json CONFIG REQUIRED)
 
 add_executable(eidolon_client
     src/main.cpp
+    src/decoder/ffmpeg_d3d11va_decoder.cpp
+    src/renderer/d3d11_renderer.cpp
+    src/audio/sdl_opus_player.cpp
+    src/input/input_handler.cpp
+    src/network/webrtc_client.cpp
 )
 
 target_include_directories(eidolon_client PRIVATE
@@ -27,4 +32,5 @@ target_link_libraries(eidolon_client PRIVATE
     imm32.lib
     version.lib
     winmm.lib
+    avrt.lib
 )

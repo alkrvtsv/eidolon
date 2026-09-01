@@ -1,11 +1,11 @@
 #include "capture/dxgi_capturer.h"
-#include <dxgi1_2.h>
+#include <string>
 
 DXGICapturer::DXGICapturer() {
     cursorShapeBuffer_.reserve(64 * 64 * 4);
 }
 
-DXGICapturer::~DXGICapturer() {
+DXGICapturer::~DXGICapturer() noexcept {
     Shutdown();
 }
 
@@ -24,7 +24,7 @@ bool DXGICapturer::Initialize() {
     return true;
 }
 
-void DXGICapturer::Shutdown() {
+void DXGICapturer::Shutdown() noexcept {
     ReleaseFrame();
     duplication_.Reset();
     context_.Reset();
@@ -67,26 +67,73 @@ bool DXGICapturer::InitializeDuplication() {
         return false;
     }
 
-    ComPtr<IDXGIOutput> output;
-    if (FAILED(adapter->EnumOutputs(0, &output))) {
+    ComPtr<IDXGIFactory1> factory;
+    if (FAILED(adapter->GetParent(IID_PPV_ARGS(&factory)))) {
         return false;
     }
 
-    DXGI_OUTPUT_DESC outputDesc;
-    if (FAILED(output->GetDesc(&outputDesc))) {
+    ComPtr<IDXGIOutputDuplication> bestDupl;
+    DXGI_OUTPUT_DESC bestDesc = {};
+    bool foundVirtual = false;
+
+    ComPtr<IDXGIAdapter1> curAdapter;
+    for (UINT a = 0; factory->EnumAdapters1(a, &curAdapter) != DXGI_ERROR_NOT_FOUND; ++a) {
+        ComPtr<IDXGIOutput> output;
+        for (UINT o = 0; curAdapter->EnumOutputs(o, &output) != DXGI_ERROR_NOT_FOUND; ++o) {
+            DXGI_OUTPUT_DESC desc;
+            if (FAILED(output->GetDesc(&desc)) || !desc.AttachedToDesktop) {
+                continue;
+            }
+
+            MONITORINFOEXW mi = { sizeof(mi) };
+            std::wstring devString = L"";
+            if (GetMonitorInfoW(desc.Monitor, &mi)) {
+                DISPLAY_DEVICEW dd = { sizeof(dd) };
+                if (EnumDisplayDevicesW(mi.szDevice, 0, &dd, 0)) {
+                    devString = dd.DeviceString;
+                }
+            }
+
+            bool isVirtual = (devString.find(L"Indirect") != std::wstring::npos) ||
+                             (devString.find(L"Virtual") != std::wstring::npos) ||
+                             (devString.find(L"Idd") != std::wstring::npos) ||
+                             (devString.find(L"VDD") != std::wstring::npos);
+
+            ComPtr<IDXGIOutput1> output1;
+            if (FAILED(output.As(&output1))) {
+                continue;
+            }
+
+            ComPtr<IDXGIOutputDuplication> duplTest;
+            HRESULT hr = output1->DuplicateOutput(device_.Get(), &duplTest);
+            if (SUCCEEDED(hr)) {
+                if (isVirtual) {
+                    bestDupl = duplTest;
+                    bestDesc = desc;
+                    foundVirtual = true;
+                    break;
+                }
+
+                if (!bestDupl) {
+                    bestDupl = duplTest;
+                    bestDesc = desc;
+                }
+            }
+        }
+        if (foundVirtual) {
+            break;
+        }
+    }
+
+    if (!bestDupl) {
         return false;
     }
 
-    width_ = outputDesc.DesktopCoordinates.right - outputDesc.DesktopCoordinates.left;
-    height_ = outputDesc.DesktopCoordinates.bottom - outputDesc.DesktopCoordinates.top;
+    duplication_ = bestDupl;
+    width_ = bestDesc.DesktopCoordinates.right - bestDesc.DesktopCoordinates.left;
+    height_ = bestDesc.DesktopCoordinates.bottom - bestDesc.DesktopCoordinates.top;
 
-    ComPtr<IDXGIOutput1> output1;
-    if (FAILED(output.As(&output1))) {
-        return false;
-    }
-
-    HRESULT hr = output1->DuplicateOutput(device_.Get(), &duplication_);
-    return SUCCEEDED(hr);
+    return true;
 }
 
 CaptureStatus DXGICapturer::AcquireFrame(ID3D11Texture2D** ppTexture, uint32_t timeoutMs) {
@@ -149,14 +196,12 @@ void DXGICapturer::ProcessCursor(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) {
         return;
     }
 
-    if (frameInfo.PointerPosition.Visible || !frameInfo.PointerPosition.Visible) {
-        if (cursorPositionCallback_) {
-            CursorPositionMessage posMsg;
-            posMsg.x = frameInfo.PointerPosition.Position.x;
-            posMsg.y = frameInfo.PointerPosition.Position.y;
-            posMsg.visible = frameInfo.PointerPosition.Visible ? 1 : 0;
-            cursorPositionCallback_(posMsg);
-        }
+    if (cursorPositionCallback_) {
+        CursorPositionMessage posMsg;
+        posMsg.x = frameInfo.PointerPosition.Position.x;
+        posMsg.y = frameInfo.PointerPosition.Position.y;
+        posMsg.visible = frameInfo.PointerPosition.Visible ? 1 : 0;
+        cursorPositionCallback_(posMsg);
     }
 
     if (frameInfo.PointerShapeBufferSize > 0) {

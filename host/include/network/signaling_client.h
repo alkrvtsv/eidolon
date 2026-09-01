@@ -15,7 +15,7 @@ public:
 
     void Connect();
     void Disconnect() noexcept;
-    void SendMessage(const std::string& message);
+    void SendText(const std::string& message);
 
     void SetOnMessageCallback(std::function<void(const std::string&)> callback) {
         onMessageReceived_ = std::move(callback);

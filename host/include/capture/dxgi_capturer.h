@@ -1,18 +1,21 @@
 #pragma once
 
 #include "capture/frame_capturer.h"
+#include <d3d11.h>
+#include <dxgi1_2.h>
 #include <wrl/client.h>
 #include <vector>
+#include <functional>
 
 using Microsoft::WRL::ComPtr;
 
 class DXGICapturer final : public IFrameCapturer {
 public:
     DXGICapturer();
-    ~DXGICapturer() override;
+    ~DXGICapturer() noexcept override;
 
     bool Initialize() override;
-    void Shutdown() override;
+    void Shutdown() noexcept override;
 
     CaptureStatus AcquireFrame(ID3D11Texture2D** ppTexture, uint32_t timeoutMs) override;
     void ReleaseFrame() override;

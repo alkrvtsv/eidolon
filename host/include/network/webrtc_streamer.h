@@ -6,6 +6,8 @@
 #include <functional>
 #include <atomic>
 #include <vector>
+#include <string>
+#include <utility>
 
 class WebRTCStreamer {
 public:
@@ -15,6 +17,7 @@ public:
     bool Initialize();
     void Shutdown() noexcept;
 
+    void StartSession();
     void ProcessSignalingMessage(const std::string& msg);
     
     void SendVideoFrame(const uint8_t* data, size_t size);
@@ -32,20 +35,24 @@ public:
         controlCallback_ = std::move(callback);
     }
 
-    bool IsConnected() const { return peerConnected_; }
+    bool IsPeerConnected() const { return peerConnected_; }
 
 private:
+    void CreatePeerConnection();
     void SetupDataChannels();
 
     std::shared_ptr<rtc::PeerConnection> pc_;
-    std::shared_ptr<rtc::Track> videoTrack_;
+    
+    std::shared_ptr<rtc::DataChannel> videoChannel_;
     std::shared_ptr<rtc::DataChannel> inputChannel_;
     std::shared_ptr<rtc::DataChannel> audioChannel_;
     std::shared_ptr<rtc::DataChannel> cursorChannel_;
     std::shared_ptr<rtc::DataChannel> controlChannel_;
 
-    std::atomic<bool> peerConnected_{false};
     std::vector<uint8_t> cursorPayloadBuffer_;
+    std::atomic<bool> peerConnected_{false};
+    bool hasRemoteDescription_{false};
+    std::vector<std::pair<std::string, std::string>> pendingCandidates_;
 
     std::function<void(const std::string&)> signalingSend_;
     std::function<void(const uint8_t* data, size_t size)> inputCallback_;

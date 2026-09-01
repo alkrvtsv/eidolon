@@ -2,9 +2,10 @@
 
 #include "encoder/video_encoder.h"
 #include "nvEncodeAPI.h"
-#include <windows.h>
+#include <d3d11.h>
 #include <wrl/client.h>
-#include <functional>
+#include <memory>
+#include <array>
 
 using Microsoft::WRL::ComPtr;
 
@@ -16,37 +17,33 @@ public:
     bool Initialize(ID3D11Device* device, const EncoderConfig& config) override;
     void Shutdown() noexcept override;
 
-    bool EncodeFrame(ID3D11Texture2D* pTexture, bool forceIDR) override;
-    void SetEncodedFrameCallback(std::function<void(const uint8_t* data, size_t size)> callback) override {
-        encodedFrameCallback_ = std::move(callback);
+    bool EncodeFrame(ID3D11Texture2D* texture, bool forceIDR) override;
+    void SetEncodedFrameCallback(std::function<void(const uint8_t*, size_t)> callback) override {
+        encodedCallback_ = std::move(callback);
     }
 
     uint32_t GetWidth() const override { return config_.width; }
     uint32_t GetHeight() const override { return config_.height; }
 
 private:
-    bool LoadNvEncApi();
-    bool CreateEncoderSession();
-    bool InitializeEncoder();
-    bool AllocateResources();
-    void ReleaseResources() noexcept;
+    static constexpr int kSlotCount = 4;
 
-    HMODULE nvencLib_{nullptr};
-    NV_ENCODE_API_FUNCTION_LIST nvenc_{};
+    struct ResourceSlot {
+        NV_ENC_REGISTERED_PTR registeredResource{nullptr};
+        NV_ENC_INPUT_PTR mappedResource{nullptr};
+        NV_ENC_OUTPUT_PTR bitstreamBuffer{nullptr};
+    };
+
+    HMODULE nvencModule_{nullptr};
+    std::unique_ptr<NV_ENCODE_API_FUNCTION_LIST> nvApi_;
     void* encoder_{nullptr};
 
     ComPtr<ID3D11Device> device_;
     EncoderConfig config_{};
+    uint64_t frameIndex_{0};
 
-    static constexpr size_t kNumSlots = 4;
-    struct ResourceSlot {
-        NV_ENC_REGISTER_RESOURCE registeredResource{};
-        NV_ENC_OUTPUT_PTR bitstreamBuffer{nullptr};
-        ID3D11Texture2D* registeredTexture{nullptr};
-    };
+    std::array<ResourceSlot, kSlotCount> slots_{};
+    int currentSlot_{0};
 
-    ResourceSlot slots_[kNumSlots]{};
-    size_t currentSlot_{0};
-
-    std::function<void(const uint8_t* data, size_t size)> encodedFrameCallback_;
+    std::function<void(const uint8_t*, size_t)> encodedCallback_;
 };

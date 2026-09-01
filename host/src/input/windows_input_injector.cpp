@@ -1,76 +1,40 @@
 #include "input/windows_input_injector.h"
 
 WindowsInputInjector::WindowsInputInjector() = default;
-
-WindowsInputInjector::~WindowsInputInjector() noexcept {
-    Shutdown();
-}
+WindowsInputInjector::~WindowsInputInjector() noexcept = default;
 
 bool WindowsInputInjector::Initialize() {
-    Shutdown();
-    useKernelDriver_ = TryOpenKernelDriver();
     return true;
 }
 
-void WindowsInputInjector::Shutdown() noexcept {
-    if (driverHandle_ != INVALID_HANDLE_VALUE) {
-        CloseHandle(driverHandle_);
-        driverHandle_ = INVALID_HANDLE_VALUE;
-    }
-    useKernelDriver_ = false;
-}
-
-bool WindowsInputInjector::TryOpenKernelDriver() {
-    driverHandle_ = CreateFileW(
-        L"\\\\.\\FakerInput",
-        GENERIC_WRITE | GENERIC_READ,
-        0,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr
-    );
-
-    return driverHandle_ != INVALID_HANDLE_VALUE;
-}
-
 void WindowsInputInjector::InjectMouseRelative(int32_t deltaX, int32_t deltaY) {
-    if (deltaX == 0 && deltaY == 0) {
-        return;
-    }
-
     INPUT input = {};
     input.type = INPUT_MOUSE;
-    input.mi.dx = static_cast<LONG>(deltaX);
-    input.mi.dy = static_cast<LONG>(deltaY);
-    input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE;
-    input.mi.time = 0;
-    input.mi.dwExtraInfo = 0;
-
+    input.mi.dx = deltaX;
+    input.mi.dy = deltaY;
+    input.mi.dwFlags = MOUSEEVENTF_MOVE;
     SendInput(1, &input, sizeof(INPUT));
 }
 
 void WindowsInputInjector::InjectMouseButton(uint8_t button, bool pressed) {
     INPUT input = {};
     input.type = INPUT_MOUSE;
-    input.mi.time = 0;
-    input.mi.dwExtraInfo = 0;
 
     switch (button) {
-        case 1:
+        case 1: // Left
             input.mi.dwFlags = pressed ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
             break;
-        case 2:
-            input.mi.dwFlags = pressed ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
-            break;
-        case 3:
+        case 2: // Middle
             input.mi.dwFlags = pressed ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP;
             break;
-        case 4:
+        case 3: // Right
+            input.mi.dwFlags = pressed ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
+            break;
+        case 4: // XBUTTON1
             input.mi.dwFlags = pressed ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
             input.mi.mouseData = XBUTTON1;
             break;
-        case 5:
+        case 5: // XBUTTON2
             input.mi.dwFlags = pressed ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
             input.mi.mouseData = XBUTTON2;
             break;
@@ -81,29 +45,33 @@ void WindowsInputInjector::InjectMouseButton(uint8_t button, bool pressed) {
     SendInput(1, &input, sizeof(INPUT));
 }
 
-void WindowsInputInjector::InjectKeyboard(uint16_t vkCode, bool pressed) {
-    if (vkCode == 0) {
-        return;
+void WindowsInputInjector::InjectMouseWheel(int32_t deltaX, int32_t deltaY) {
+    if (deltaY != 0) {
+        INPUT input = {};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = MOUSEEVENTF_WHEEL;
+        input.mi.mouseData = static_cast<DWORD>(deltaY * WHEEL_DELTA);
+        SendInput(1, &input, sizeof(INPUT));
     }
+    if (deltaX != 0) {
+        INPUT input = {};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = MOUSEEVENTF_HWHEEL;
+        input.mi.mouseData = static_cast<DWORD>(deltaX * WHEEL_DELTA);
+        SendInput(1, &input, sizeof(INPUT));
+    }
+}
 
-    UINT scanCode = MapVirtualKeyW(vkCode, MAPVK_VK_TO_VSC);
-
+void WindowsInputInjector::InjectKeyboard(uint16_t vkCode, bool pressed) {
     INPUT input = {};
     input.type = INPUT_KEYBOARD;
-    input.ki.wVk = 0;
-    input.ki.wScan = static_cast<WORD>(scanCode);
-    input.ki.dwFlags = KEYEVENTF_SCANCODE;
-    
-    if (!pressed) {
-        input.ki.dwFlags |= KEYEVENTF_KEYUP;
-    }
+    input.ki.wVk = vkCode;
+    input.ki.dwFlags = pressed ? 0 : KEYEVENTF_KEYUP;
 
-    if ((scanCode & 0xFF00) == 0xE000 || (scanCode & 0xFF00) == 0xE100) {
+    // Для расширенных клавиш (стрелки, Insert/Delete и т.д.)
+    if (vkCode >= VK_PRIOR && vkCode <= VK_DOWN) {
         input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
     }
-
-    input.ki.time = 0;
-    input.ki.dwExtraInfo = 0;
 
     SendInput(1, &input, sizeof(INPUT));
 }
