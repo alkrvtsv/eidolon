@@ -79,8 +79,9 @@ int main() {
     std::atomic<bool> forceIDR{true};
     streamer.SetControlCallback([&](ControlCommandType cmd) {
         if (cmd == ControlCommandType::RequestIDR) {
-            std::cout << "[Host] IDR Keyframe requested" << std::endl;
+            std::cout << "[Host] IDR Keyframe & Cursor resend requested" << std::endl;
             forceIDR = true;
+            capturer.ResendCursorState();
         }
     });
 
@@ -131,7 +132,7 @@ int main() {
     ComPtr<ID3D11Texture2D> lastValidNV12;
     auto lastFrameTime = std::chrono::steady_clock::now();
 
-    // Создаем резервный пустой NV12 кадр на случай старта в покое
+    // Создаем резервный NV12 кадр
     D3D11_TEXTURE2D_DESC desc = {};
     desc.Width = capturer.GetWidth();
     desc.Height = capturer.GetHeight();

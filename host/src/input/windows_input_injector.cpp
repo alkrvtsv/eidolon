@@ -66,10 +66,14 @@ void WindowsInputInjector::InjectKeyboard(uint16_t vkCode, bool pressed) {
     INPUT input = {};
     input.type = INPUT_KEYBOARD;
     input.ki.wVk = vkCode;
+    input.ki.wScan = static_cast<WORD>(MapVirtualKeyW(vkCode, MAPVK_VK_TO_VSC));
     input.ki.dwFlags = pressed ? 0 : KEYEVENTF_KEYUP;
 
-    // Для расширенных клавиш (стрелки, Insert/Delete и т.д.)
-    if (vkCode >= VK_PRIOR && vkCode <= VK_DOWN) {
+    if ((vkCode >= VK_PRIOR && vkCode <= VK_DOWN) ||
+        vkCode == VK_INSERT || vkCode == VK_DELETE ||
+        vkCode == VK_LWIN || vkCode == VK_RWIN ||
+        vkCode == VK_RMENU || vkCode == VK_RCONTROL ||
+        vkCode == VK_DIVIDE || vkCode == VK_NUMLOCK) {
         input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
     }
 

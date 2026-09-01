@@ -2,6 +2,7 @@
 
 #include "protocol.h"
 #include <SDL2/SDL.h>
+#include <windows.h>
 #include <functional>
 #include <cstdint>
 
@@ -21,7 +22,12 @@ public:
     bool IsMouseCaptured() const { return mouseCaptured_; }
 
 private:
+    static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
+
     SDL_Window* window_{nullptr};
     bool mouseCaptured_{false};
     std::function<void(const uint8_t*, size_t)> inputCallback_;
+
+    static inline HHOOK keyboardHook_{nullptr};
+    static inline InputHandler* instance_{nullptr};
 };

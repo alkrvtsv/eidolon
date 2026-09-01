@@ -1,8 +1,9 @@
 #include "capture/dxgi_capturer.h"
-#include <string>
+#include <iostream>
 
 DXGICapturer::DXGICapturer() {
-    cursorShapeBuffer_.reserve(64 * 64 * 4);
+    shapeBuffer_.resize(64 * 64 * 4);
+    convertedShapeBuffer_.resize(64 * 64 * 4);
 }
 
 DXGICapturer::~DXGICapturer() noexcept {
@@ -12,16 +13,37 @@ DXGICapturer::~DXGICapturer() noexcept {
 bool DXGICapturer::Initialize() {
     Shutdown();
 
-    if (!CreateD3DDevice()) {
-        return false;
-    }
+    D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
+    D3D_FEATURE_LEVEL featureLevel;
 
-    if (!InitializeDuplication()) {
-        Shutdown();
-        return false;
-    }
+    HRESULT hr = D3D11CreateDevice(
+        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+        featureLevels, ARRAYSIZE(featureLevels),
+        D3D11_SDK_VERSION, &device_, &featureLevel, &context_
+    );
 
-    return true;
+    if (FAILED(hr)) return false;
+
+    ComPtr<IDXGIDevice> dxgiDevice;
+    device_.As(&dxgiDevice);
+
+    ComPtr<IDXGIAdapter> dxgiAdapter;
+    dxgiDevice->GetAdapter(&dxgiAdapter);
+
+    ComPtr<IDXGIOutput> dxgiOutput;
+    if (FAILED(dxgiAdapter->EnumOutputs(0, &dxgiOutput))) return false;
+
+    ComPtr<IDXGIOutput1> dxgiOutput1;
+    dxgiOutput.As(&dxgiOutput1);
+
+    DXGI_OUTPUT_DESC outDesc;
+    dxgiOutput->GetDesc(&outDesc);
+    width_ = outDesc.DesktopCoordinates.right - outDesc.DesktopCoordinates.left;
+    height_ = outDesc.DesktopCoordinates.bottom - outDesc.DesktopCoordinates.top;
+
+    hr = dxgiOutput1->DuplicateOutput(device_.Get(), &duplication_);
+    return SUCCEEDED(hr);
 }
 
 void DXGICapturer::Shutdown() noexcept {
@@ -29,122 +51,19 @@ void DXGICapturer::Shutdown() noexcept {
     duplication_.Reset();
     context_.Reset();
     device_.Reset();
-    width_ = 0;
-    height_ = 0;
 }
 
-bool DXGICapturer::CreateD3DDevice() {
-    D3D_FEATURE_LEVEL featureLevels[] = {
-        D3D_FEATURE_LEVEL_11_1,
-        D3D_FEATURE_LEVEL_11_0
-    };
-
-    D3D_FEATURE_LEVEL featureLevel;
-    HRESULT hr = D3D11CreateDevice(
-        nullptr,
-        D3D_DRIVER_TYPE_HARDWARE,
-        nullptr,
-        D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
-        featureLevels,
-        static_cast<UINT>(std::size(featureLevels)),
-        D3D11_SDK_VERSION,
-        &device_,
-        &featureLevel,
-        &context_
-    );
-
-    return SUCCEEDED(hr);
+void DXGICapturer::ResendCursorState() {
+    if (hasCachedShape_ && cursorShapeCallback_ && !cachedShapeData_.empty()) {
+        cursorShapeCallback_(cachedShape_, cachedShapeData_.data());
+    }
+    if (hasCachedPos_ && cursorPositionCallback_) {
+        cursorPositionCallback_(cachedPos_);
+    }
 }
 
-bool DXGICapturer::InitializeDuplication() {
-    ComPtr<IDXGIDevice> dxgiDevice;
-    if (FAILED(device_.As(&dxgiDevice))) {
-        return false;
-    }
-
-    ComPtr<IDXGIAdapter> adapter;
-    if (FAILED(dxgiDevice->GetAdapter(&adapter))) {
-        return false;
-    }
-
-    ComPtr<IDXGIFactory1> factory;
-    if (FAILED(adapter->GetParent(IID_PPV_ARGS(&factory)))) {
-        return false;
-    }
-
-    ComPtr<IDXGIOutputDuplication> bestDupl;
-    DXGI_OUTPUT_DESC bestDesc = {};
-    bool foundVirtual = false;
-
-    ComPtr<IDXGIAdapter1> curAdapter;
-    for (UINT a = 0; factory->EnumAdapters1(a, &curAdapter) != DXGI_ERROR_NOT_FOUND; ++a) {
-        ComPtr<IDXGIOutput> output;
-        for (UINT o = 0; curAdapter->EnumOutputs(o, &output) != DXGI_ERROR_NOT_FOUND; ++o) {
-            DXGI_OUTPUT_DESC desc;
-            if (FAILED(output->GetDesc(&desc)) || !desc.AttachedToDesktop) {
-                continue;
-            }
-
-            MONITORINFOEXW mi = { sizeof(mi) };
-            std::wstring devString = L"";
-            if (GetMonitorInfoW(desc.Monitor, &mi)) {
-                DISPLAY_DEVICEW dd = { sizeof(dd) };
-                if (EnumDisplayDevicesW(mi.szDevice, 0, &dd, 0)) {
-                    devString = dd.DeviceString;
-                }
-            }
-
-            bool isVirtual = (devString.find(L"Indirect") != std::wstring::npos) ||
-                             (devString.find(L"Virtual") != std::wstring::npos) ||
-                             (devString.find(L"Idd") != std::wstring::npos) ||
-                             (devString.find(L"VDD") != std::wstring::npos);
-
-            ComPtr<IDXGIOutput1> output1;
-            if (FAILED(output.As(&output1))) {
-                continue;
-            }
-
-            ComPtr<IDXGIOutputDuplication> duplTest;
-            HRESULT hr = output1->DuplicateOutput(device_.Get(), &duplTest);
-            if (SUCCEEDED(hr)) {
-                if (isVirtual) {
-                    bestDupl = duplTest;
-                    bestDesc = desc;
-                    foundVirtual = true;
-                    break;
-                }
-
-                if (!bestDupl) {
-                    bestDupl = duplTest;
-                    bestDesc = desc;
-                }
-            }
-        }
-        if (foundVirtual) {
-            break;
-        }
-    }
-
-    if (!bestDupl) {
-        return false;
-    }
-
-    duplication_ = bestDupl;
-    width_ = bestDesc.DesktopCoordinates.right - bestDesc.DesktopCoordinates.left;
-    height_ = bestDesc.DesktopCoordinates.bottom - bestDesc.DesktopCoordinates.top;
-
-    return true;
-}
-
-CaptureStatus DXGICapturer::AcquireFrame(ID3D11Texture2D** ppTexture, uint32_t timeoutMs) {
-    if (!ppTexture) {
-        return CaptureStatus::Error;
-    }
-    *ppTexture = nullptr;
-
-    if (!duplication_) {
-        return CaptureStatus::AccessLost;
-    }
+CaptureStatus DXGICapturer::AcquireFrame(ID3D11Texture2D** outTexture, uint32_t timeoutMs) {
+    if (!duplication_ || !outTexture) return CaptureStatus::Error;
 
     ReleaseFrame();
 
@@ -154,10 +73,11 @@ CaptureStatus DXGICapturer::AcquireFrame(ID3D11Texture2D** ppTexture, uint32_t t
     HRESULT hr = duplication_->AcquireNextFrame(timeoutMs, &frameInfo, &desktopResource);
 
     if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
+        ProcessCursor(frameInfo);
         return CaptureStatus::Timeout;
     }
 
-    if (hr == DXGI_ERROR_ACCESS_LOST) {
+    if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_INVALID_CALL) {
         return CaptureStatus::AccessLost;
     }
 
@@ -165,68 +85,120 @@ CaptureStatus DXGICapturer::AcquireFrame(ID3D11Texture2D** ppTexture, uint32_t t
         return CaptureStatus::Error;
     }
 
-    frameLocked_ = true;
-
-    ProcessCursor(frameInfo);
-
-    if (frameInfo.LastPresentTime.QuadPart == 0) {
-        return CaptureStatus::Timeout;
-    }
-
-    ComPtr<ID3D11Texture2D> desktopTexture;
-    hr = desktopResource.As(&desktopTexture);
+    frameAcquired_ = true;
+    hr = desktopResource.As(&currentFrameTexture_);
     if (FAILED(hr)) {
         ReleaseFrame();
         return CaptureStatus::Error;
     }
 
-    *ppTexture = desktopTexture.Detach();
+    ProcessCursor(frameInfo);
+
+    *outTexture = currentFrameTexture_.Get();
+    (*outTexture)->AddRef();
     return CaptureStatus::Success;
 }
 
 void DXGICapturer::ReleaseFrame() {
-    if (frameLocked_ && duplication_) {
+    if (frameAcquired_ && duplication_) {
+        currentFrameTexture_.Reset();
         duplication_->ReleaseFrame();
-        frameLocked_ = false;
+        frameAcquired_ = false;
     }
 }
 
 void DXGICapturer::ProcessCursor(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) {
-    if (frameInfo.LastMouseUpdateTime.QuadPart == 0) {
+    if (frameInfo.LastMouseUpdateTime.QuadPart == 0 && !hasCachedShape_) {
         return;
     }
 
-    if (cursorPositionCallback_) {
-        CursorPositionMessage posMsg;
-        posMsg.x = frameInfo.PointerPosition.Position.x;
-        posMsg.y = frameInfo.PointerPosition.Position.y;
-        posMsg.visible = frameInfo.PointerPosition.Visible ? 1 : 0;
-        cursorPositionCallback_(posMsg);
+    if (frameInfo.PointerPosition.Visible) {
+        cachedPos_.type = MessageType::CursorPosition;
+        cachedPos_.x = frameInfo.PointerPosition.Position.x;
+        cachedPos_.y = frameInfo.PointerPosition.Position.y;
+        cachedPos_.visible = 1;
+        hasCachedPos_ = true;
+
+        if (cursorPositionCallback_) {
+            cursorPositionCallback_(cachedPos_);
+        }
+    } else if (frameInfo.LastMouseUpdateTime.QuadPart != 0) {
+        cachedPos_.visible = 0;
+        if (cursorPositionCallback_) {
+            cursorPositionCallback_(cachedPos_);
+        }
     }
 
     if (frameInfo.PointerShapeBufferSize > 0) {
-        if (cursorShapeBuffer_.size() < frameInfo.PointerShapeBufferSize) {
-            cursorShapeBuffer_.resize(frameInfo.PointerShapeBufferSize);
+        if (shapeBuffer_.size() < frameInfo.PointerShapeBufferSize) {
+            shapeBuffer_.resize(frameInfo.PointerShapeBufferSize);
         }
 
         UINT requiredSize = 0;
         DXGI_OUTDUPL_POINTER_SHAPE_INFO shapeInfo;
         HRESULT hr = duplication_->GetFramePointerShape(
             frameInfo.PointerShapeBufferSize,
-            cursorShapeBuffer_.data(),
+            shapeBuffer_.data(),
             &requiredSize,
             &shapeInfo
         );
 
-        if (SUCCEEDED(hr) && cursorShapeCallback_) {
-            CursorShapeMessage shapeMsg;
-            shapeMsg.width = shapeInfo.Width;
-            shapeMsg.height = shapeInfo.Height;
-            shapeMsg.hotspotX = shapeInfo.HotSpot.x;
-            shapeMsg.hotspotY = shapeInfo.HotSpot.y;
-            shapeMsg.dataSize = requiredSize;
+        if (SUCCEEDED(hr)) {
+            CursorShapeMessage msg;
+            msg.type = MessageType::CursorShape;
+            msg.width = shapeInfo.Width;
+            msg.height = shapeInfo.Height;
+            msg.hotspotX = shapeInfo.HotSpot.x;
+            msg.hotspotY = shapeInfo.HotSpot.y;
 
-            cursorShapeCallback_(shapeMsg, cursorShapeBuffer_.data());
+            if (shapeInfo.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR) {
+                msg.dataSize = shapeInfo.Width * shapeInfo.Height * 4;
+                cachedShape_ = msg;
+                cachedShapeData_.assign(shapeBuffer_.data(), shapeBuffer_.data() + msg.dataSize);
+                hasCachedShape_ = true;
+
+                if (cursorShapeCallback_) {
+                    cursorShapeCallback_(msg, shapeBuffer_.data());
+                }
+            } else if (shapeInfo.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME) {
+                UINT actualHeight = shapeInfo.Height / 2;
+                msg.height = actualHeight;
+                msg.dataSize = shapeInfo.Width * actualHeight * 4;
+
+                if (convertedShapeBuffer_.size() < msg.dataSize) {
+                    convertedShapeBuffer_.resize(msg.dataSize);
+                }
+
+                auto* dst = reinterpret_cast<uint32_t*>(convertedShapeBuffer_.data());
+                const uint8_t* andMask = shapeBuffer_.data();
+                const uint8_t* xorMask = shapeBuffer_.data() + (shapeInfo.Pitch * actualHeight);
+
+                for (UINT row = 0; row < actualHeight; ++row) {
+                    for (UINT col = 0; col < shapeInfo.Width; ++col) {
+                        UINT byteIdx = (row * shapeInfo.Pitch) + (col / 8);
+                        UINT bitMask = 0x80 >> (col % 8);
+
+                        bool andBit = (andMask[byteIdx] & bitMask) != 0;
+                        bool xorBit = (xorMask[byteIdx] & bitMask) != 0;
+
+                        if (!andBit && !xorBit) {
+                            dst[row * shapeInfo.Width + col] = 0xFF000000; // Черный непрозрачный
+                        } else if (!andBit && xorBit) {
+                            dst[row * shapeInfo.Width + col] = 0xFFFFFFFF; // Белый непрозрачный
+                        } else {
+                            dst[row * shapeInfo.Width + col] = 0x00000000; // Прозрачный
+                        }
+                    }
+                }
+
+                cachedShape_ = msg;
+                cachedShapeData_.assign(convertedShapeBuffer_.data(), convertedShapeBuffer_.data() + msg.dataSize);
+                hasCachedShape_ = true;
+
+                if (cursorShapeCallback_) {
+                    cursorShapeCallback_(msg, convertedShapeBuffer_.data());
+                }
+            }
         }
     }
 }

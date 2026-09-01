@@ -1,58 +1,76 @@
 #pragma once
 
-#include "renderer/video_renderer.h"
-#include <d3d11_4.h>
-#include <dxgi1_5.h>
+#include "protocol.h"
+#include "decoder/ffmpeg_d3d11va_decoder.h"
+#include <d3d11.h>
+#include <dxgi.h>
 #include <wrl/client.h>
+#include <cstdint>
 #include <vector>
+#include <mutex>
 
 using Microsoft::WRL::ComPtr;
 
-class D3D11Renderer final : public IVideoRenderer {
+class D3D11Renderer {
 public:
     D3D11Renderer();
-    ~D3D11Renderer() noexcept override;
+    ~D3D11Renderer() noexcept;
 
-    bool Initialize(HWND hwnd, uint32_t width, uint32_t height) override;
-    void Shutdown() noexcept override;
+    bool Initialize(HWND hwnd, uint32_t width, uint32_t height);
+    void Shutdown() noexcept;
+    void Resize(uint32_t width, uint32_t height);
 
-    void Resize(uint32_t width, uint32_t height) override;
-    bool RenderFrame(const DecodedFrame& frame) override;
+    void RenderFrame(const DecodedFrame& frame);
+    void UpdateCursorPosition(const CursorPositionMessage& pos);
+    void UpdateCursorShape(const CursorShapeMessage& shape, const uint8_t* data);
 
-    void UpdateCursorShape(const CursorShapeMessage& shape, const uint8_t* data) override;
-    void UpdateCursorPosition(const CursorPositionMessage& pos) override;
-
-    ID3D11Device* GetDevice() const override { return device_.Get(); }
-    ID3D11DeviceContext* GetContext() const override { return context_.Get(); }
+    ID3D11Device* GetDevice() const { return device_.Get(); }
+    ID3D11DeviceContext* GetContext() const { return context_.Get(); }
 
 private:
-    bool CreateDevice();
-    bool CreateSwapChain(HWND hwnd);
-    bool CreateVideoProcessor(uint32_t inputWidth, uint32_t inputHeight);
-    void UpdateRenderTargetViews();
+    bool CreateDeviceAndSwapChain(HWND hwnd);
+    bool CreateRenderTarget();
+    void CleanupRenderTarget();
+    bool CreateVideoProcessor();
+    bool CreateCursorPipeline();
+    bool UpdateCursorTexture(uint32_t width, uint32_t height, const uint8_t* rgbaData);
+
+    HWND hwnd_{nullptr};
+    uint32_t windowWidth_{1920};
+    uint32_t windowHeight_{1080};
+    uint32_t videoWidth_{0};
+    uint32_t videoHeight_{0};
 
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;
-    ComPtr<IDXGISwapChain1> swapChain_;
-    
+    ComPtr<IDXGISwapChain> swapChain_;
+    ComPtr<ID3D11RenderTargetView> renderTargetView_;
+
+    // D3D11 Video Processor
     ComPtr<ID3D11VideoDevice> videoDevice_;
     ComPtr<ID3D11VideoContext> videoContext_;
-    ComPtr<ID3D11VideoProcessorEnumerator> videoEnumerator_;
+    ComPtr<ID3D11VideoProcessorEnumerator> videoProcessorEnum_;
     ComPtr<ID3D11VideoProcessor> videoProcessor_;
-    ComPtr<ID3D11VideoProcessorOutputView> vpOutputView_;
+    ComPtr<ID3D11VideoProcessorOutputView> outputView_;
 
-    ComPtr<ID3D11Texture2D> backBuffer_;
-    ComPtr<ID3D11RenderTargetView> rtv_;
+    // Шейдерный пайплайн отрисовки курсора
+    ComPtr<ID3D11VertexShader> cursorVS_;
+    ComPtr<ID3D11PixelShader> cursorPS_;
+    ComPtr<ID3D11Buffer> cursorCB_;
+    ComPtr<ID3D11BlendState> blendState_;
+    ComPtr<ID3D11SamplerState> samplerState_;
 
-    uint32_t clientWidth_{0};
-    uint32_t clientHeight_{0};
-    uint32_t streamWidth_{0};
-    uint32_t streamHeight_{0};
-    bool tearingSupported_{false};
+    // Состояние курсора
+    std::mutex cursorMutex_;
+    bool cursorVisible_{false};
+    int32_t cursorX_{0};
+    int32_t cursorY_{0};
+    int32_t cursorHotspotX_{0};
+    int32_t cursorHotspotY_{0};
+    uint32_t cursorWidth_{0};
+    uint32_t cursorHeight_{0};
 
-    CursorPositionMessage cursorPos_{};
-    CursorShapeMessage cursorShape_{};
-    std::vector<uint8_t> cursorData_;
+    std::vector<uint8_t> cursorPixelData_;
     ComPtr<ID3D11Texture2D> cursorTexture_;
-    ComPtr<ID3D11ShaderResourceView> cursorSrv_;
+    ComPtr<ID3D11ShaderResourceView> cursorSRV_;
 };
