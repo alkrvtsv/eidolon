@@ -1,14 +1,5 @@
 #include "renderer/d3d11_renderer.h"
-#include <d3dcompiler.h>
 #include <iostream>
-
-#pragma comment(lib, "d3dcompiler.lib")
-
-struct CursorCBData {
-    float rect[4];     // x, y, width, height в экранных пикселях
-    float viewport[2]; // windowWidth, windowHeight
-    float pad[2];
-};
 
 D3D11Renderer::D3D11Renderer() = default;
 
@@ -31,27 +22,17 @@ bool D3D11Renderer::Initialize(HWND hwnd, uint32_t width, uint32_t height) {
     if (!CreateRenderTarget()) {
         return false;
     }
-    if (!CreateCursorPipeline()) {
-        return false;
-    }
 
     return true;
 }
 
 void D3D11Renderer::Shutdown() noexcept {
     CleanupRenderTarget();
-    blendState_.Reset();
-    samplerState_.Reset();
-    cursorCB_.Reset();
-    cursorPS_.Reset();
-    cursorVS_.Reset();
     outputView_.Reset();
     videoProcessor_.Reset();
     videoProcessorEnum_.Reset();
     videoContext_.Reset();
     videoDevice_.Reset();
-    cursorSRV_.Reset();
-    cursorTexture_.Reset();
     swapChain_.Reset();
     context_.Reset();
     device_.Reset();
@@ -102,10 +83,16 @@ bool D3D11Renderer::CreateDeviceAndSwapChain(HWND hwnd) {
 bool D3D11Renderer::CreateVideoProcessor() {
     if (!videoDevice_) return false;
 
+    videoProcessor_.Reset();
+    videoProcessorEnum_.Reset();
+
+    uint32_t inW = (videoWidth_ > 0) ? videoWidth_ : windowWidth_;
+    uint32_t inH = (videoHeight_ > 0) ? videoHeight_ : windowHeight_;
+
     D3D11_VIDEO_PROCESSOR_CONTENT_DESC desc = {};
     desc.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
-    desc.InputWidth = windowWidth_;
-    desc.InputHeight = windowHeight_;
+    desc.InputWidth = inW;
+    desc.InputHeight = inH;
     desc.OutputWidth = windowWidth_;
     desc.OutputHeight = windowHeight_;
     desc.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
@@ -139,82 +126,6 @@ void D3D11Renderer::CleanupRenderTarget() {
     renderTargetView_.Reset();
 }
 
-bool D3D11Renderer::CreateCursorPipeline() {
-    const char* vsSource = R"(
-        cbuffer CursorCB : register(b0) {
-            float4 rect;
-            float2 viewport;
-            float2 pad;
-        };
-        struct VS_OUT {
-            float4 pos : SV_POSITION;
-            float2 uv : TEXCOORD0;
-        };
-        VS_OUT main(uint id : SV_VertexID) {
-            VS_OUT output;
-            float2 uv = float2((id == 1 || id == 4 || id == 5) ? 1.0 : 0.0,
-                               (id == 2 || id == 3 || id == 5) ? 1.0 : 0.0);
-            float2 pixelPos = rect.xy + uv * rect.zw;
-            float2 ndc = float2((pixelPos.x / viewport.x) * 2.0 - 1.0,
-                                1.0 - (pixelPos.y / viewport.y) * 2.0);
-            output.pos = float4(ndc, 0.0, 1.0);
-            output.uv = uv;
-            return output;
-        }
-    )";
-
-    const char* psSource = R"(
-        Texture2D tex : register(t0);
-        SamplerState samp : register(s0);
-        struct VS_OUT {
-            float4 pos : SV_POSITION;
-            float2 uv : TEXCOORD0;
-        };
-        float4 main(VS_OUT input) : SV_TARGET {
-            return tex.Sample(samp, input.uv);
-        }
-    )";
-
-    ComPtr<ID3DBlob> vsBlob, psBlob, errorBlob;
-    HRESULT hr = D3DCompile(vsSource, strlen(vsSource), nullptr, nullptr, nullptr, "main", "vs_5_0", 0, 0, &vsBlob, &errorBlob);
-    if (FAILED(hr)) return false;
-    hr = device_->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &cursorVS_);
-    if (FAILED(hr)) return false;
-
-    hr = D3DCompile(psSource, strlen(psSource), nullptr, nullptr, nullptr, "main", "ps_5_0", 0, 0, &psBlob, &errorBlob);
-    if (FAILED(hr)) return false;
-    hr = device_->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &cursorPS_);
-    if (FAILED(hr)) return false;
-
-    D3D11_BUFFER_DESC cbDesc = {};
-    cbDesc.ByteWidth = sizeof(CursorCBData);
-    cbDesc.Usage = D3D11_USAGE_DYNAMIC;
-    cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    cbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    hr = device_->CreateBuffer(&cbDesc, nullptr, &cursorCB_);
-    if (FAILED(hr)) return false;
-
-    D3D11_BLEND_DESC blendDesc = {};
-    blendDesc.RenderTarget[0].BlendEnable = TRUE;
-    blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
-    blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
-    blendDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
-    blendDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
-    blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
-    blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
-    blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-    hr = device_->CreateBlendState(&blendDesc, &blendState_);
-    if (FAILED(hr)) return false;
-
-    D3D11_SAMPLER_DESC sampDesc = {};
-    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-    sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-    sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-    sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    hr = device_->CreateSamplerState(&sampDesc, &samplerState_);
-    return SUCCEEDED(hr);
-}
-
 void D3D11Renderer::Resize(uint32_t width, uint32_t height) {
     if (width == 0 || height == 0 || (width == windowWidth_ && height == windowHeight_)) return;
 
@@ -234,10 +145,14 @@ void D3D11Renderer::Resize(uint32_t width, uint32_t height) {
 void D3D11Renderer::RenderFrame(const DecodedFrame& frame) {
     if (!frame.texture || !swapChain_) return;
 
-    videoWidth_ = frame.width;
-    videoHeight_ = frame.height;
+    if (frame.width > 0 && frame.height > 0 && (frame.width != videoWidth_ || frame.height != videoHeight_)) {
+        videoWidth_ = frame.width;
+        videoHeight_ = frame.height;
+        CleanupRenderTarget();
+        CreateVideoProcessor();
+        CreateRenderTarget();
+    }
 
-    // 1. Аппаратный блит кадра видео в SwapChain
     if (videoContext_ && videoProcessor_ && outputView_ && videoProcessorEnum_) {
         D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd = {};
         ivd.FourCC = 0;
@@ -262,100 +177,5 @@ void D3D11Renderer::RenderFrame(const DecodedFrame& frame) {
         }
     }
 
-    // 2. Отрисовка аппаратного оверлея курсора
-    {
-        std::lock_guard<std::mutex> lock(cursorMutex_);
-        if (cursorVisible_ && cursorSRV_ && cursorWidth_ > 0 && cursorHeight_ > 0) {
-            ID3D11RenderTargetView* rtv = renderTargetView_.Get();
-            context_->OMSetRenderTargets(1, &rtv, nullptr);
-
-            D3D11_VIEWPORT vp = {};
-            vp.Width = static_cast<float>(windowWidth_);
-            vp.Height = static_cast<float>(windowHeight_);
-            vp.MinDepth = 0.0f;
-            vp.MaxDepth = 1.0f;
-            context_->RSSetViewports(1, &vp);
-
-            float scaleX = (videoWidth_ > 0) ? (static_cast<float>(windowWidth_) / videoWidth_) : 1.0f;
-            float scaleY = (videoHeight_ > 0) ? (static_cast<float>(windowHeight_) / videoHeight_) : 1.0f;
-
-            D3D11_MAPPED_SUBRESOURCE mapped;
-            if (SUCCEEDED(context_->Map(cursorCB_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-                auto* cb = static_cast<CursorCBData*>(mapped.pData);
-                cb->rect[0] = static_cast<float>(cursorX_) - (cursorHotspotX_ * scaleX);
-                cb->rect[1] = static_cast<float>(cursorY_) - (cursorHotspotY_ * scaleY);
-                cb->rect[2] = cursorWidth_ * scaleX;
-                cb->rect[3] = cursorHeight_ * scaleY;
-                cb->viewport[0] = static_cast<float>(windowWidth_);
-                cb->viewport[1] = static_cast<float>(windowHeight_);
-                context_->Unmap(cursorCB_.Get(), 0);
-            }
-
-            context_->VSSetShader(cursorVS_.Get(), nullptr, 0);
-            context_->VSSetConstantBuffers(0, 1, cursorCB_.GetAddressOf());
-            context_->PSSetShader(cursorPS_.Get(), nullptr, 0);
-            context_->PSSetShaderResources(0, 1, cursorSRV_.GetAddressOf());
-            context_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
-
-            float blendFactor[4] = { 0.f, 0.f, 0.f, 0.f };
-            context_->OMSetBlendState(blendState_.Get(), blendFactor, 0xFFFFFFFF);
-            context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-            context_->Draw(6, 0);
-        }
-    }
-
     swapChain_->Present(0, 0);
-}
-
-void D3D11Renderer::UpdateCursorPosition(const CursorPositionMessage& pos) {
-    std::lock_guard<std::mutex> lock(cursorMutex_);
-    cursorVisible_ = (pos.visible != 0);
-
-    if (videoWidth_ > 0 && videoHeight_ > 0) {
-        cursorX_ = (pos.x * static_cast<int32_t>(windowWidth_)) / static_cast<int32_t>(videoWidth_);
-        cursorY_ = (pos.y * static_cast<int32_t>(windowHeight_)) / static_cast<int32_t>(videoHeight_);
-    } else {
-        cursorX_ = pos.x;
-        cursorY_ = pos.y;
-    }
-}
-
-void D3D11Renderer::UpdateCursorShape(const CursorShapeMessage& shape, const uint8_t* data) {
-    std::lock_guard<std::mutex> lock(cursorMutex_);
-    cursorWidth_ = shape.width;
-    cursorHeight_ = shape.height;
-    cursorHotspotX_ = shape.hotspotX;
-    cursorHotspotY_ = shape.hotspotY;
-
-    if (data && shape.dataSize > 0) {
-        UpdateCursorTexture(shape.width, shape.height, data);
-    }
-}
-
-bool D3D11Renderer::UpdateCursorTexture(uint32_t width, uint32_t height, const uint8_t* rgbaData) {
-    if (!device_ || width == 0 || height == 0 || !rgbaData) return false;
-
-    cursorSRV_.Reset();
-    cursorTexture_.Reset();
-
-    D3D11_TEXTURE2D_DESC desc = {};
-    desc.Width = width;
-    desc.Height = height;
-    desc.MipLevels = 1;
-    desc.ArraySize = 1;
-    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    desc.SampleDesc.Count = 1;
-    desc.Usage = D3D11_USAGE_DEFAULT;
-    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-    D3D11_SUBRESOURCE_DATA initData = {};
-    initData.pSysMem = rgbaData;
-    initData.SysMemPitch = width * 4;
-
-    HRESULT hr = device_->CreateTexture2D(&desc, &initData, &cursorTexture_);
-    if (FAILED(hr)) return false;
-
-    hr = device_->CreateShaderResourceView(cursorTexture_.Get(), nullptr, &cursorSRV_);
-    return SUCCEEDED(hr);
 }

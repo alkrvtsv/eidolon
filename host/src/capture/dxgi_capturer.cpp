@@ -108,22 +108,25 @@ void DXGICapturer::ReleaseFrame() {
 }
 
 void DXGICapturer::ProcessCursor(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) {
-    if (frameInfo.LastMouseUpdateTime.QuadPart == 0 && !hasCachedShape_) {
-        return;
+    CURSORINFO ci = { sizeof(CURSORINFO) };
+    bool isShowing = true;
+    if (GetCursorInfo(&ci)) {
+        isShowing = (ci.flags & CURSOR_SHOWING) != 0;
     }
 
-    if (frameInfo.PointerPosition.Visible) {
+    // Проверяем изменение позиции или глобального статуса видимости игры
+    if (frameInfo.LastMouseUpdateTime.QuadPart != 0 || isShowing != (cachedPos_.visible != 0)) {
         cachedPos_.type = MessageType::CursorPosition;
-        cachedPos_.x = frameInfo.PointerPosition.Position.x;
-        cachedPos_.y = frameInfo.PointerPosition.Position.y;
-        cachedPos_.visible = 1;
+        if (frameInfo.PointerPosition.Visible) {
+            cachedPos_.x = frameInfo.PointerPosition.Position.x;
+            cachedPos_.y = frameInfo.PointerPosition.Position.y;
+        } else if (ci.flags & CURSOR_SHOWING) {
+            cachedPos_.x = ci.ptScreenPos.x;
+            cachedPos_.y = ci.ptScreenPos.y;
+        }
+        cachedPos_.visible = isShowing ? 1 : 0;
         hasCachedPos_ = true;
 
-        if (cursorPositionCallback_) {
-            cursorPositionCallback_(cachedPos_);
-        }
-    } else if (frameInfo.LastMouseUpdateTime.QuadPart != 0) {
-        cachedPos_.visible = 0;
         if (cursorPositionCallback_) {
             cursorPositionCallback_(cachedPos_);
         }
@@ -182,11 +185,11 @@ void DXGICapturer::ProcessCursor(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) {
                         bool xorBit = (xorMask[byteIdx] & bitMask) != 0;
 
                         if (!andBit && !xorBit) {
-                            dst[row * shapeInfo.Width + col] = 0xFF000000; // Черный непрозрачный
+                            dst[row * shapeInfo.Width + col] = 0xFF000000;
                         } else if (!andBit && xorBit) {
-                            dst[row * shapeInfo.Width + col] = 0xFFFFFFFF; // Белый непрозрачный
+                            dst[row * shapeInfo.Width + col] = 0xFFFFFFFF;
                         } else {
-                            dst[row * shapeInfo.Width + col] = 0x00000000; // Прозрачный
+                            dst[row * shapeInfo.Width + col] = 0x00000000;
                         }
                     }
                 }

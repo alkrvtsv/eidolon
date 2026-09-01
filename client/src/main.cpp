@@ -10,17 +10,24 @@
 #include <nlohmann/json.hpp>
 #include <rtc/rtc.hpp>
 #include <iostream>
+#include <string>
 
 using json = nlohmann::json;
 
 int main(int argc, char* argv[]) {
-    (void)argc;
-    (void)argv;
-
     rtc::InitLogger(rtc::LogLevel::Warning);
 
     MMCSSScopedTask mmcss(L"Games");
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
+    std::string signalingUrl = "ws://192.168.1.13:8080";
+    if (argc > 1) {
+        signalingUrl = argv[1];
+        if (signalingUrl.rfind("ws://", 0) != 0) {
+            signalingUrl = "ws://" + signalingUrl;
+        }
+    }
+    std::cout << "[Client] Connecting to signaling server: " << signalingUrl << std::endl;
 
     std::cout << "[Client] Initializing SDL..." << std::endl;
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_AUDIO) < 0) {
@@ -69,7 +76,9 @@ int main(int argc, char* argv[]) {
     }
 
     SDLOpusPlayer audioPlayer;
-    audioPlayer.Initialize();
+    if (!audioPlayer.Initialize()) {
+        std::cerr << "[Client WARNING] Audio Player Init Failed" << std::endl;
+    }
 
     InputHandler inputHandler;
     inputHandler.Initialize(window);
@@ -97,14 +106,15 @@ int main(int argc, char* argv[]) {
     });
 
     client.SetCursorShapeCallback([&](const CursorShapeMessage& shape, const uint8_t* data) {
-        renderer.UpdateCursorShape(shape, data);
+        inputHandler.UpdateCursorShape(shape, data);
     });
 
     client.SetCursorPositionCallback([&](const CursorPositionMessage& pos) {
-        renderer.UpdateCursorPosition(pos);
+        inputHandler.UpdateCursorPosition(pos);
     });
 
     decoder.SetFrameCallback([&](const DecodedFrame& frame) {
+        inputHandler.SetHostResolution(frame.width, frame.height);
         renderer.RenderFrame(frame);
     });
 
@@ -129,7 +139,7 @@ int main(int argc, char* argv[]) {
         if (ws.isOpen()) ws.send(msg);
     });
 
-    ws.open("ws://192.168.1.13:8080");
+    ws.open(signalingUrl);
 
     bool running = true;
     SDL_Event event;
@@ -139,7 +149,10 @@ int main(int argc, char* argv[]) {
             if (event.type == SDL_QUIT) {
                 running = false;
             } else if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_RESIZED) {
-                renderer.Resize(static_cast<uint32_t>(event.window.data1), static_cast<uint32_t>(event.window.data2));
+                uint32_t w = static_cast<uint32_t>(event.window.data1);
+                uint32_t h = static_cast<uint32_t>(event.window.data2);
+                renderer.Resize(w, h);
+                inputHandler.SetWindowSize(w, h);
             } else {
                 inputHandler.ProcessEvent(event);
             }

@@ -16,6 +16,15 @@ void WindowsInputInjector::InjectMouseRelative(int32_t deltaX, int32_t deltaY) {
     SendInput(1, &input, sizeof(INPUT));
 }
 
+void WindowsInputInjector::InjectMouseAbsolute(uint16_t x, uint16_t y) {
+    INPUT input = {};
+    input.type = INPUT_MOUSE;
+    input.mi.dx = static_cast<LONG>(x);
+    input.mi.dy = static_cast<LONG>(y);
+    input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+    SendInput(1, &input, sizeof(INPUT));
+}
+
 void WindowsInputInjector::InjectMouseButton(uint8_t button, bool pressed) {
     INPUT input = {};
     input.type = INPUT_MOUSE;

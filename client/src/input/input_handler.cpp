@@ -1,4 +1,5 @@
 #include "input/input_handler.h"
+#include <algorithm>
 #include <iostream>
 
 InputHandler::InputHandler() {
@@ -7,11 +8,20 @@ InputHandler::InputHandler() {
 
 InputHandler::~InputHandler() noexcept {
     SetMouseCaptured(false);
+    if (currentSdlCursor_) {
+        SDL_FreeCursor(currentSdlCursor_);
+        currentSdlCursor_ = nullptr;
+    }
     instance_ = nullptr;
 }
 
 bool InputHandler::Initialize(SDL_Window* window) {
     window_ = window;
+    int w, h;
+    SDL_GetWindowSize(window, &w, &h);
+    windowWidth_ = static_cast<uint32_t>(w);
+    windowHeight_ = static_cast<uint32_t>(h);
+
     SetMouseCaptured(true);
     return true;
 }
@@ -19,21 +29,78 @@ bool InputHandler::Initialize(SDL_Window* window) {
 void InputHandler::SetMouseCaptured(bool captured) {
     mouseCaptured_ = captured;
     if (window_) {
-        SDL_SetRelativeMouseMode(captured ? SDL_TRUE : SDL_FALSE);
-        SDL_SetWindowKeyboardGrab(window_, captured ? SDL_TRUE : SDL_FALSE);
+        if (captured) {
+            SDL_SetWindowGrab(window_, SDL_TRUE);
+            SDL_SetWindowKeyboardGrab(window_, SDL_TRUE);
+            if (!hostCursorVisible_) {
+                SDL_SetRelativeMouseMode(SDL_TRUE);
+            } else {
+                SDL_SetRelativeMouseMode(SDL_FALSE);
+                SDL_ShowCursor(SDL_ENABLE);
+            }
+        } else {
+            SDL_SetRelativeMouseMode(SDL_FALSE);
+            SDL_ShowCursor(SDL_ENABLE);
+            SDL_SetWindowGrab(window_, SDL_FALSE);
+            SDL_SetWindowKeyboardGrab(window_, SDL_FALSE);
+        }
     }
 
     if (captured) {
         if (!keyboardHook_) {
             keyboardHook_ = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, GetModuleHandleW(nullptr), 0);
         }
-        std::cout << "[Input] Captured (Shift+Escape to release, Win-key isolated)" << std::endl;
+        std::cout << "[Input] Captured (Shift+Escape to release, Dual-Mode Active)" << std::endl;
     } else {
         if (keyboardHook_) {
             UnhookWindowsHookEx(keyboardHook_);
             keyboardHook_ = nullptr;
         }
-        std::cout << "[Input] Released (Click window to capture)" << std::endl;
+        std::cout << "[Input] Released (Click inside window to focus)" << std::endl;
+    }
+}
+
+void InputHandler::UpdateCursorPosition(const CursorPositionMessage& pos) {
+    bool newVisible = (pos.visible != 0);
+
+    // Переключаем режим SDL ТОЛЬКО когда статус видимости реально изменился (вход в 3D игру)
+    if (newVisible != hostCursorVisible_) {
+        hostCursorVisible_ = newVisible;
+        if (mouseCaptured_ && window_) {
+            if (!hostCursorVisible_) {
+                // 3D игра скрыла курсор: захватываем дельты
+                SDL_SetRelativeMouseMode(SDL_TRUE);
+            } else {
+                // Курсор снова на экране: возвращаем локальный курсор без скачков
+                SDL_SetRelativeMouseMode(SDL_FALSE);
+                SDL_ShowCursor(SDL_ENABLE);
+            }
+        }
+    }
+}
+
+void InputHandler::UpdateCursorShape(const CursorShapeMessage& shape, const uint8_t* rgbaData) {
+    if (!rgbaData || shape.width == 0 || shape.height == 0) return;
+
+    SDL_Surface* surface = SDL_CreateRGBSurfaceWithFormatFrom(
+        const_cast<void*>(reinterpret_cast<const void*>(rgbaData)),
+        shape.width,
+        shape.height,
+        32,
+        shape.width * 4,
+        SDL_PIXELFORMAT_BGRA32
+    );
+
+    if (surface) {
+        SDL_Cursor* newCursor = SDL_CreateColorCursor(surface, shape.hotspotX, shape.hotspotY);
+        if (newCursor) {
+            SDL_SetCursor(newCursor);
+            if (currentSdlCursor_) {
+                SDL_FreeCursor(currentSdlCursor_);
+            }
+            currentSdlCursor_ = newCursor;
+        }
+        SDL_FreeSurface(surface);
     }
 }
 
@@ -50,7 +117,7 @@ LRESULT CALLBACK InputHandler::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 msg.pressed = isDown ? 1 : 0;
                 instance_->inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
             }
-            return 1; // Блокируем открытие меню Пуск на локальной машине
+            return 1;
         }
     }
     return CallNextHookEx(keyboardHook_, nCode, wParam, lParam);
@@ -58,7 +125,6 @@ LRESULT CALLBACK InputHandler::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
 
 static uint16_t SDLScancodeToVK(SDL_Scancode scancode) {
     switch (scancode) {
-        // Буквы A-Z
         case SDL_SCANCODE_A: return 'A';
         case SDL_SCANCODE_B: return 'B';
         case SDL_SCANCODE_C: return 'C';
@@ -86,7 +152,6 @@ static uint16_t SDLScancodeToVK(SDL_Scancode scancode) {
         case SDL_SCANCODE_Y: return 'Y';
         case SDL_SCANCODE_Z: return 'Z';
 
-        // Цифры 0-9
         case SDL_SCANCODE_1: return '1';
         case SDL_SCANCODE_2: return '2';
         case SDL_SCANCODE_3: return '3';
@@ -98,20 +163,18 @@ static uint16_t SDLScancodeToVK(SDL_Scancode scancode) {
         case SDL_SCANCODE_9: return '9';
         case SDL_SCANCODE_0: return '0';
 
-        // Русская раскладка и знаки препинания
-        case SDL_SCANCODE_COMMA: return VK_OEM_COMMA;        // Буква 'Б' / запятая
-        case SDL_SCANCODE_PERIOD: return VK_OEM_PERIOD;      // Буква 'Ю' / точка
-        case SDL_SCANCODE_SEMICOLON: return VK_OEM_1;        // Буква 'Ж' / точка с запятой
-        case SDL_SCANCODE_APOSTROPHE: return VK_OEM_7;       // Буква 'Э' / апостроф
-        case SDL_SCANCODE_LEFTBRACKET: return VK_OEM_4;      // Буква 'Х' / скобка [
-        case SDL_SCANCODE_RIGHTBRACKET: return VK_OEM_6;     // Буква 'Ъ' / скобка ]
-        case SDL_SCANCODE_GRAVE: return VK_OEM_3;            // Буква 'Ё' / тильда `
-        case SDL_SCANCODE_SLASH: return VK_OEM_2;            // Точка в русской / слэш
-        case SDL_SCANCODE_BACKSLASH: return VK_OEM_5;        // Обратный слэш
-        case SDL_SCANCODE_MINUS: return VK_OEM_MINUS;        // Минус
-        case SDL_SCANCODE_EQUALS: return VK_OEM_PLUS;        // Плюс / Равно
+        case SDL_SCANCODE_COMMA: return VK_OEM_COMMA;
+        case SDL_SCANCODE_PERIOD: return VK_OEM_PERIOD;
+        case SDL_SCANCODE_SEMICOLON: return VK_OEM_1;
+        case SDL_SCANCODE_APOSTROPHE: return VK_OEM_7;
+        case SDL_SCANCODE_LEFTBRACKET: return VK_OEM_4;
+        case SDL_SCANCODE_RIGHTBRACKET: return VK_OEM_6;
+        case SDL_SCANCODE_GRAVE: return VK_OEM_3;
+        case SDL_SCANCODE_SLASH: return VK_OEM_2;
+        case SDL_SCANCODE_BACKSLASH: return VK_OEM_5;
+        case SDL_SCANCODE_MINUS: return VK_OEM_MINUS;
+        case SDL_SCANCODE_EQUALS: return VK_OEM_PLUS;
 
-        // Служебные клавиши
         case SDL_SCANCODE_RETURN: return VK_RETURN;
         case SDL_SCANCODE_ESCAPE: return VK_ESCAPE;
         case SDL_SCANCODE_BACKSPACE: return VK_BACK;
@@ -119,7 +182,6 @@ static uint16_t SDLScancodeToVK(SDL_Scancode scancode) {
         case SDL_SCANCODE_SPACE: return VK_SPACE;
         case SDL_SCANCODE_CAPSLOCK: return VK_CAPITAL;
 
-        // Модификаторы
         case SDL_SCANCODE_LCTRL: return VK_LCONTROL;
         case SDL_SCANCODE_LSHIFT: return VK_LSHIFT;
         case SDL_SCANCODE_LALT: return VK_LMENU;
@@ -129,7 +191,6 @@ static uint16_t SDLScancodeToVK(SDL_Scancode scancode) {
         case SDL_SCANCODE_RALT: return VK_RMENU;
         case SDL_SCANCODE_RGUI: return VK_RWIN;
 
-        // Навигация
         case SDL_SCANCODE_UP: return VK_UP;
         case SDL_SCANCODE_DOWN: return VK_DOWN;
         case SDL_SCANCODE_LEFT: return VK_LEFT;
@@ -141,7 +202,6 @@ static uint16_t SDLScancodeToVK(SDL_Scancode scancode) {
         case SDL_SCANCODE_PAGEUP: return VK_PRIOR;
         case SDL_SCANCODE_PAGEDOWN: return VK_NEXT;
 
-        // F1-F12
         case SDL_SCANCODE_F1: return VK_F1;
         case SDL_SCANCODE_F2: return VK_F2;
         case SDL_SCANCODE_F3: return VK_F3;
@@ -155,7 +215,6 @@ static uint16_t SDLScancodeToVK(SDL_Scancode scancode) {
         case SDL_SCANCODE_F11: return VK_F11;
         case SDL_SCANCODE_F12: return VK_F12;
 
-        // Numpad
         case SDL_SCANCODE_KP_0: return VK_NUMPAD0;
         case SDL_SCANCODE_KP_1: return VK_NUMPAD1;
         case SDL_SCANCODE_KP_2: return VK_NUMPAD2;
@@ -185,7 +244,6 @@ void InputHandler::ProcessEvent(const SDL_Event& event) {
     if (event.type == SDL_MOUSEBUTTONDOWN) {
         if (!mouseCaptured_) {
             SetMouseCaptured(true);
-            return;
         }
 
         if (inputCallback_) {
@@ -196,7 +254,7 @@ void InputHandler::ProcessEvent(const SDL_Event& event) {
             inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
         }
     } else if (event.type == SDL_MOUSEBUTTONUP) {
-        if (mouseCaptured_ && inputCallback_) {
+        if (inputCallback_) {
             MouseButtonMessage msg;
             msg.type = MessageType::InputMouseButton;
             msg.button = event.button.button;
@@ -205,12 +263,23 @@ void InputHandler::ProcessEvent(const SDL_Event& event) {
         }
     } else if (event.type == SDL_MOUSEMOTION) {
         if (mouseCaptured_ && inputCallback_) {
-            if (event.motion.xrel != 0 || event.motion.yrel != 0) {
-                MouseRelativeMessage msg;
-                msg.type = MessageType::InputMouseRelative;
-                msg.deltaX = event.motion.xrel;
-                msg.deltaY = event.motion.yrel;
+            if (hostCursorVisible_) {
+                int clampedX = std::clamp(event.motion.x, 0, static_cast<int>(windowWidth_));
+                int clampedY = std::clamp(event.motion.y, 0, static_cast<int>(windowHeight_));
+
+                MouseAbsoluteMessage msg;
+                msg.type = MessageType::InputMouseAbsolute;
+                msg.x = static_cast<uint16_t>((static_cast<uint64_t>(clampedX) * 65535) / windowWidth_);
+                msg.y = static_cast<uint16_t>((static_cast<uint64_t>(clampedY) * 65535) / windowHeight_);
                 inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+            } else {
+                if (event.motion.xrel != 0 || event.motion.yrel != 0) {
+                    MouseRelativeMessage msg;
+                    msg.type = MessageType::InputMouseRelative;
+                    msg.deltaX = event.motion.xrel;
+                    msg.deltaY = event.motion.yrel;
+                    inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+                }
             }
         }
     } else if (event.type == SDL_MOUSEWHEEL) {

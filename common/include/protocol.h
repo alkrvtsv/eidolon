@@ -11,13 +11,20 @@ enum class MessageType : uint8_t {
     InputKeyboard = 4,
     CursorPosition = 5,
     CursorShape = 6,
-    ControlCommand = 7
+    ControlCommand = 7,
+    InputMouseAbsolute = 8
 };
 
 struct MouseRelativeMessage {
     MessageType type{MessageType::InputMouseRelative};
     int32_t deltaX{0};
     int32_t deltaY{0};
+};
+
+struct MouseAbsoluteMessage {
+    MessageType type{MessageType::InputMouseAbsolute};
+    uint16_t x{0}; // 0 .. 65535
+    uint16_t y{0}; // 0 .. 65535
 };
 
 struct MouseButtonMessage {
