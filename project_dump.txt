@@ -4,38 +4,84 @@ eidolon/
 ├── CMakeLists.txt
 ├── client
 │   ├── CMakeLists.txt
-│   ├── config
-│   │   └── client.json
+│   ├── include
+│   │   ├── audio
+│   │   │   ├── audio_player.h
+│   │   │   └── sdl_opus_player.h
+│   │   ├── decoder
+│   │   │   ├── ffmpeg_d3d11va_decoder.h
+│   │   │   └── video_decoder.h
+│   │   ├── input
+│   │   │   └── input_handler.h
+│   │   ├── network
+│   │   │   └── webrtc_client.h
+│   │   └── renderer
+│   │       ├── d3d11_renderer.h
+│   │       └── video_renderer.h
 │   └── src
-│       ├── FFmpegDecoder.cpp
-│       ├── FFmpegDecoder.h
-│       ├── WebRTCClient.cpp
-│       ├── WebRTCClient.h
-│       └── main.cpp
+│       ├── audio
+│       │   └── sdl_opus_player.cpp
+│       ├── decoder
+│       │   └── ffmpeg_d3d11va_decoder.cpp
+│       ├── input
+│       │   └── input_handler.cpp
+│       ├── main.cpp
+│       ├── network
+│       │   └── webrtc_client.cpp
+│       └── renderer
+│           └── d3d11_renderer.cpp
 ├── common
-│   └── CMakeLists.txt
+│   ├── CMakeLists.txt
+│   └── include
+│       ├── mmcss.h
+│       ├── protocol.h
+│       └── spsc_queue.h
 ├── host
 │   ├── CMakeLists.txt
-│   ├── config
-│   │   └── host.json
+│   ├── include
+│   │   ├── audio
+│   │   │   ├── audio_capturer.h
+│   │   │   └── wasapi_opus_capturer.h
+│   │   ├── capture
+│   │   │   ├── dxgi_capturer.h
+│   │   │   └── frame_capturer.h
+│   │   ├── color_converter
+│   │   │   ├── color_converter.h
+│   │   │   └── d3d11_video_processor.h
+│   │   ├── encoder
+│   │   │   ├── nvenc_encoder.h
+│   │   │   └── video_encoder.h
+│   │   ├── input
+│   │   │   ├── input_injector.h
+│   │   │   └── windows_input_injector.h
+│   │   └── network
+│   │       ├── signaling_client.h
+│   │       └── webrtc_streamer.h
 │   └── src
-│       ├── DXGICapture.cpp
-│       ├── DXGICapture.h
-│       ├── ListMonitors.cpp
-│       ├── NVENCEncoder.cpp
-│       ├── NVENCEncoder.h
-│       ├── SignalingClient.cpp
-│       ├── SignalingClient.h
-│       ├── WebRTCManager.cpp
-│       ├── WebRTCManager.h
+│       ├── audio
+│       │   └── wasapi_opus_capturer.cpp
+│       ├── capture
+│       │   └── dxgi_capturer.cpp
+│       ├── color_converter
+│       │   └── d3d11_video_processor.cpp
+│       ├── encoder
+│       │   └── nvenc_encoder.cpp
+│       ├── input
+│       │   └── windows_input_injector.cpp
 │       ├── main.cpp
-│       └── nvenc
-│           └── nvEncodeAPI.h
+│       └── network
+│           ├── signaling_client.cpp
+│           └── webrtc_streamer.cpp
 ├── signaling
 │   ├── config
 │   │   └── server.json
 │   ├── main.py
 │   └── requirements.txt
+├── start_eidolon.bat
+├── third_party
+│   └── nvenc
+│       └── include
+│           └── nvEncodeAPI.h
 └── vcpkg.json
 
 ==================================================
@@ -76,24 +122,48 @@ signaling/config/local_*.json
 
 2. *CMakeLists.txt*
 ```
-cmake_minimum_required(VERSION 3.15)
-project(LowLatencyStreamer VERSION 0.1)
+cmake_minimum_required(VERSION 3.20)
+project(EidolonStream LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
+if (MSVC)
+    add_compile_options(/W4 /WX /permissive- /Zc:preprocessor /utf-8)
+endif()
+
+add_subdirectory(common)
 add_subdirectory(host)
 add_subdirectory(client)
 ```
 
-3. *vcpkg.json*
+3. *start_eidolon.bat*
+```
+@echo off
+cd /d "%~dp0"
+
+echo [1/2] Zapusk signal'nogo servera...
+start "Eidolon Signaling" cmd /k "python signaling\main.py"
+
+:: Zhdem 2 sekundy dlya starta websocket-servera
+timeout /t 2 /nobreak >nul
+
+echo [2/2] Zapusk Eidolon Host...
+start "Eidolon Host" cmd /k "build\host\Release\eidolon_host.exe"
+```
+
+4. *vcpkg.json*
 ```
 {
+  "name": "eidolon",
+  "version-string": "0.1.0",
   "dependencies": [
     {
       "name": "libdatachannel",
       "features": ["srtp"]
     },
+    "opus",
     "sdl2",
     "ffmpeg",
     "nlohmann-json"
@@ -101,360 +171,544 @@ add_subdirectory(client)
 }
 ```
 
-4. *client/CMakeLists.txt*
+5. *client/CMakeLists.txt*
 ```
 find_package(LibDataChannel CONFIG REQUIRED)
-find_package(nlohmann_json CONFIG REQUIRED)
+find_package(Opus CONFIG REQUIRED)
 find_package(SDL2 CONFIG REQUIRED)
 find_package(ffmpeg REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 
-add_executable(ClientWorker 
-    src/main.cpp 
-    src/FFmpegDecoder.cpp 
-    src/WebRTCClient.cpp
+add_executable(eidolon_client
+    src/main.cpp
+    src/decoder/ffmpeg_d3d11va_decoder.cpp
+    src/renderer/d3d11_renderer.cpp
+    src/audio/sdl_opus_player.cpp
+    src/input/input_handler.cpp
+    src/network/webrtc_client.cpp
 )
 
-target_link_libraries(ClientWorker PRIVATE 
+target_include_directories(eidolon_client PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${FFMPEG_INCLUDE_DIRS}
+)
+
+target_link_libraries(eidolon_client PRIVATE
+    eidolon_common
     LibDataChannel::LibDataChannel
+    Opus::opus
+    nlohmann_json::nlohmann_json
     $<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>
     $<IF:$<TARGET_EXISTS:SDL2::SDL2>,SDL2::SDL2,SDL2::SDL2-static>
-    nlohmann_json::nlohmann_json
     ${FFMPEG_LIBRARIES}
+    d3d11.lib
+    dxgi.lib
+    dxguid.lib
+    imm32.lib
+    version.lib
+    winmm.lib
+    avrt.lib
 )
-
-target_include_directories(ClientWorker PRIVATE ${FFMPEG_INCLUDE_DIRS})
 ```
 
-5. *client/config/client.json*
-```
-
-```
-
-6. *client/src/FFmpegDecoder.cpp*
-```
-#include "FFmpegDecoder.h"
-#include <iostream>
-
-FFmpegDecoder::FFmpegDecoder() {
-    packet = av_packet_alloc();
-    frame = av_frame_alloc();
-}
-
-FFmpegDecoder::~FFmpegDecoder() {
-    if (codecContext) avcodec_free_context(&codecContext);
-    if (packet) av_packet_free(&packet);
-    if (frame) av_frame_free(&frame);
-}
-
-bool FFmpegDecoder::Init() {
-    codec = avcodec_find_decoder(AV_CODEC_ID_H264);
-    if (!codec) {
-        std::cerr << "[-] FFmpeg: Декодер H.264 не найден!" << std::endl;
-        return false;
-    }
-
-    codecContext = avcodec_alloc_context3(codec);
-    if (!codecContext) return false;
-
-    codecContext->flags |= AV_CODEC_FLAG_LOW_DELAY; 
-    codecContext->thread_count = 4;                 
-
-    if (avcodec_open2(codecContext, codec, nullptr) < 0) {
-        std::cerr << "[-] FFmpeg: Не удалось открыть декодер." << std::endl;
-        return false;
-    }
-
-    std::cout << "[+] FFmpeg: H.264 декодер успешно инициализирован." << std::endl;
-    return true;
-}
-
-bool FFmpegDecoder::DecodeAndRender(const uint8_t* data, size_t size, SDL_Renderer* renderer, SDL_Texture** texture) {
-    if (size < 12) return false; 
-
-    uint16_t seq = (data[2] << 8) | data[3];
-    if (haveExpected && seq != expectedSeq) {
-        std::cerr << "[!] Потерян пакет. Ожидался: " << expectedSeq << ", получен: " << seq << ". Сброс кадра." << std::endl;
-        frameBuffer.clear();
-    }
-    expectedSeq = seq + 1;
-    haveExpected = true;
-
-    uint8_t cc = data[0] & 0x0F;                
-    bool has_extension = (data[0] & 0x10) != 0; 
-    size_t offset = 12 + cc * 4;                
-
-    if (has_extension) {
-        if (size < offset + 4) return false;
-        uint16_t ext_len = (data[offset + 2] << 8) | data[offset + 3];
-        offset += 4 + ext_len * 4;
-    }
-
-    if (size <= offset) return false;
-
-    const uint8_t* payload = data + offset;
-    size_t payload_size = size - offset;
-
-    uint8_t nal_type = payload[0] & 0x1F;
-    std::vector<uint8_t> readyFrames;
-
-    if (nal_type == 28) {
-        if (payload_size < 2) return false;
-        
-        uint8_t fu_header = payload[1];
-        bool is_start = fu_header & 0x80;
-        bool is_end = fu_header & 0x40;
-        uint8_t original_nal = (payload[0] & 0xE0) | (fu_header & 0x1F);
-
-        if (is_start) {
-            frameBuffer.clear();
-            frameBuffer.push_back(0x00); frameBuffer.push_back(0x00);
-            frameBuffer.push_back(0x00); frameBuffer.push_back(0x01);
-            frameBuffer.push_back(original_nal);
-            frameBuffer.insert(frameBuffer.end(), payload + 2, payload + payload_size);
-            return false; 
-        } else {
-            frameBuffer.insert(frameBuffer.end(), payload + 2, payload + payload_size);
-            if (is_end) {
-                readyFrames = frameBuffer; 
-            } else {
-                return false; 
-            }
-        }
-    } 
-    else if (nal_type == 24) {
-        size_t stap_offset = 1; 
-        while (stap_offset + 2 <= payload_size) {
-            uint16_t nal_size = (payload[stap_offset] << 8) | payload[stap_offset + 1];
-            stap_offset += 2;
-            
-            if (stap_offset + nal_size > payload_size) break; 
-            
-            readyFrames.push_back(0x00); readyFrames.push_back(0x00);
-            readyFrames.push_back(0x00); readyFrames.push_back(0x01);
-            readyFrames.insert(readyFrames.end(), payload + stap_offset, payload + stap_offset + nal_size);
-            stap_offset += nal_size;
-        }
-    } 
-    else if (nal_type >= 1 && nal_type <= 23) {
-        readyFrames.push_back(0x00); readyFrames.push_back(0x00);
-        readyFrames.push_back(0x00); readyFrames.push_back(0x01);
-        readyFrames.insert(readyFrames.end(), payload, payload + payload_size);
-    } 
-    else {
-        return false; 
-    }
-
-    if (readyFrames.empty()) return false;
-
-    packet->data = readyFrames.data();
-    packet->size = (int)readyFrames.size();
-
-    int response = avcodec_send_packet(codecContext, packet);
-    if (response < 0) return false;
-
-    bool frameUpdated = false;
-
-    while (response >= 0) {
-        response = avcodec_receive_frame(codecContext, frame);
-        
-        if (response == AVERROR(EAGAIN) || response == AVERROR_EOF) {
-            break; 
-        } else if (response < 0) {
-            return false; 
-        }
-
-        if (!*texture || frame->width != codecContext->width || frame->height != codecContext->height) {
-            if (*texture) SDL_DestroyTexture(*texture);
-            
-            *texture = SDL_CreateTexture(
-                renderer,
-                SDL_PIXELFORMAT_IYUV, 
-                SDL_TEXTUREACCESS_STREAMING,
-                frame->width,
-                frame->height
-            );
-            std::cout << "[Video] КАДР РАСКОДИРОВАН! Разрешение: " << frame->width << "x" << frame->height << std::endl;
-        }
-
-        SDL_UpdateYUVTexture(
-            *texture,
-            nullptr,
-            frame->data[0], frame->linesize[0],
-            frame->data[1], frame->linesize[1],
-            frame->data[2], frame->linesize[2]
-        );
-        frameUpdated = true;
-    }
-
-    return frameUpdated;
-}
-```
-
-7. *client/src/FFmpegDecoder.h*
+6. *client/include/audio/audio_player.h*
 ```
 #pragma once
-#include <vector>
+
 #include <cstdint>
-#include <SDL2/SDL.h>
+#include <cstddef>
 
-extern "C" {
-#include <libavcodec/avcodec.h>
-}
-
-class FFmpegDecoder {
+class IAudioPlayer {
 public:
-    FFmpegDecoder();
-    ~FFmpegDecoder();
+    virtual ~IAudioPlayer() noexcept = default;
 
-    bool Init();
-    
-    bool DecodeAndRender(const uint8_t* data, size_t size, SDL_Renderer* renderer, SDL_Texture** texture);
+    virtual bool Initialize() = 0;
+    virtual void Shutdown() noexcept = 0;
 
-private:
-    const AVCodec* codec = nullptr;
-    AVCodecContext* codecContext = nullptr;
-    AVPacket* packet = nullptr;
-    AVFrame* frame = nullptr;
-    std::vector<uint8_t> frameBuffer;
-    uint16_t expectedSeq = 0;
-    bool haveExpected = false;
+    virtual bool DecodeAndPlay(const uint8_t* data, size_t size) = 0;
 };
 ```
 
-8. *client/src/main.cpp*
+7. *client/include/audio/sdl_opus_player.h*
 ```
-#include <iostream>
-#include <thread>
-#include <atomic>
-#include <mutex>
-#include <vector>
-#include <algorithm>
-#define NOMINMAX
-#include <windows.h>
+#pragma once
+
+#include "audio/audio_player.h"
 #include <SDL2/SDL.h>
+#include <opus/opus.h>
+
+class SDLOpusPlayer final : public IAudioPlayer {
+public:
+    SDLOpusPlayer();
+    ~SDLOpusPlayer() noexcept override;
+
+    bool Initialize() override;
+    void Shutdown() noexcept override;
+
+    bool DecodeAndPlay(const uint8_t* data, size_t size) override;
+
+private:
+    static constexpr int kSampleRate = 48000;
+    static constexpr int kChannels = 2;
+    static constexpr int kMaxFrameSize = 960 * 6;
+    static constexpr uint32_t kMaxLatencyBytes = (kSampleRate * kChannels * sizeof(float) * 30) / 1000;
+
+    OpusDecoder* decoder_{nullptr};
+    SDL_AudioDeviceID deviceId_{0};
+    float pcmOutBuffer_[kMaxFrameSize * kChannels]{};
+};
+```
+
+8. *client/include/decoder/ffmpeg_d3d11va_decoder.h*
+```
+#pragma once
+
+#include "decoder/video_decoder.h"
+#include <wrl/client.h>
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_d3d11va.h>
+}
+
+using Microsoft::WRL::ComPtr;
+
+class FFmpegD3D11VADecoder final : public IVideoDecoder {
+public:
+    FFmpegD3D11VADecoder();
+    ~FFmpegD3D11VADecoder() noexcept override;
+
+    bool Initialize(ID3D11Device* device, ID3D11DeviceContext* context) override;
+    void Shutdown() noexcept override;
+
+    bool Decode(const uint8_t* data, size_t size) override;
+    void SetFrameCallback(std::function<void(const DecodedFrame&)> callback) override {
+        frameCallback_ = std::move(callback);
+    }
+
+private:
+    static AVPixelFormat GetHwFormat(AVCodecContext* ctx, const AVPixelFormat* pix_fmts);
+    bool InitializeHardwareContext();
+
+    ComPtr<ID3D11Device> device_;
+    ComPtr<ID3D11DeviceContext> context_;
+
+    AVBufferRef* hwDeviceCtx_{nullptr};
+    AVCodecContext* codecContext_{nullptr};
+    AVCodecParserContext* parserContext_{nullptr};
+    const AVCodec* codec_{nullptr};
+    AVPacket* packet_{nullptr};
+    AVFrame* frame_{nullptr};
+
+    std::function<void(const DecodedFrame&)> frameCallback_;
+};
+```
+
+9. *client/include/decoder/video_decoder.h*
+```
+#pragma once
+
+#include <d3d11.h>
+#include <cstdint>
+#include <functional>
+
+struct DecodedFrame {
+    ID3D11Texture2D* texture{nullptr};
+    uint32_t subresourceIndex{0};
+    uint32_t width{0};
+    uint32_t height{0};
+};
+
+class IVideoDecoder {
+public:
+    virtual ~IVideoDecoder() noexcept = default;
+
+    virtual bool Initialize(ID3D11Device* device, ID3D11DeviceContext* context) = 0;
+    virtual void Shutdown() noexcept = 0;
+
+    virtual bool Decode(const uint8_t* data, size_t size) = 0;
+    virtual void SetFrameCallback(std::function<void(const DecodedFrame&)> callback) = 0;
+};
+```
+
+10. *client/include/input/input_handler.h*
+```
+#pragma once
+
+#include "protocol.h"
+#include <SDL2/SDL.h>
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#include <functional>
+#include <cstdint>
+
+class InputHandler {
+public:
+    InputHandler();
+    ~InputHandler() noexcept;
+
+    bool Initialize(SDL_Window* window);
+    void ProcessEvent(const SDL_Event& event);
+
+    void SetInputCallback(std::function<void(const uint8_t*, size_t)> callback) {
+        inputCallback_ = std::move(callback);
+    }
+
+    void SetWindowSize(uint32_t width, uint32_t height) {
+        windowWidth_ = width;
+        windowHeight_ = height;
+    }
+
+    void SetHostResolution(uint32_t width, uint32_t height) {
+        hostWidth_ = width;
+        hostHeight_ = height;
+    }
+
+    void UpdateCursorPosition(const CursorPositionMessage& pos);
+    void UpdateCursorShape(const CursorShapeMessage& shape, const uint8_t* rgbaData);
+
+    void SetMouseCaptured(bool captured);
+    bool IsMouseCaptured() const { return mouseCaptured_; }
+
+private:
+    static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
+
+    SDL_Window* window_{nullptr};
+    uint32_t windowWidth_{1920};
+    uint32_t windowHeight_{1080};
+    uint32_t hostWidth_{2560};
+    uint32_t hostHeight_{1440};
+
+    bool mouseCaptured_{false};
+    bool hostCursorVisible_{true};
+    std::function<void(const uint8_t*, size_t)> inputCallback_;
+
+    SDL_Cursor* currentSdlCursor_{nullptr};
+
+    static inline HHOOK keyboardHook_{nullptr};
+    static inline InputHandler* instance_{nullptr};
+};
+```
+
+11. *client/include/network/webrtc_client.h*
+```
+#pragma once
+
+#include "protocol.h"
+#include <rtc/rtc.hpp>
+#include <memory>
+#include <functional>
+#include <atomic>
+#include <string>
+#include <vector>
+#include <utility>
+
+class WebRTCClient {
+public:
+    WebRTCClient();
+    ~WebRTCClient() noexcept;
+
+    bool Initialize();
+    void Shutdown() noexcept;
+
+    void ProcessSignalingMessage(const std::string& msg);
+    void SendInputData(const uint8_t* data, size_t size);
+    void RequestIDR();
+
+    void SetSignalingSender(std::function<void(const std::string&)> callback) {
+        signalingSend_ = std::move(callback);
+    }
+    void SetVideoCallback(std::function<void(const uint8_t* data, size_t size)> callback) {
+        videoCallback_ = std::move(callback);
+    }
+    void SetAudioCallback(std::function<void(const uint8_t* data, size_t size)> callback) {
+        audioCallback_ = std::move(callback);
+    }
+    void SetCursorShapeCallback(std::function<void(const CursorShapeMessage&, const uint8_t*)> callback) {
+        cursorShapeCallback_ = std::move(callback);
+    }
+    void SetCursorPositionCallback(std::function<void(const CursorPositionMessage&)> callback) {
+        cursorPositionCallback_ = std::move(callback);
+    }
+
+    bool IsConnected() const { return connected_; }
+
+private:
+    std::shared_ptr<rtc::PeerConnection> pc_;
+    
+    std::shared_ptr<rtc::DataChannel> videoChannel_;
+    std::shared_ptr<rtc::DataChannel> inputChannel_;
+    std::shared_ptr<rtc::DataChannel> audioChannel_;
+    std::shared_ptr<rtc::DataChannel> cursorChannel_;
+    std::shared_ptr<rtc::DataChannel> controlChannel_;
+
+    std::atomic<bool> connected_{false};
+    bool hasRemoteDescription_{false};
+    std::vector<std::pair<std::string, std::string>> pendingCandidates_;
+
+    std::function<void(const std::string&)> signalingSend_;
+    std::function<void(const uint8_t* data, size_t size)> videoCallback_;
+    std::function<void(const uint8_t* data, size_t size)> audioCallback_;
+    std::function<void(const CursorShapeMessage&, const uint8_t*)> cursorShapeCallback_;
+    std::function<void(const CursorPositionMessage&)> cursorPositionCallback_;
+};
+```
+
+12. *client/include/renderer/d3d11_renderer.h*
+```
+#pragma once
+
+#include "protocol.h"
+#include "decoder/ffmpeg_d3d11va_decoder.h"
+#include <d3d11.h>
+#include <dxgi.h>
+#include <wrl/client.h>
+#include <cstdint>
+
+using Microsoft::WRL::ComPtr;
+
+class D3D11Renderer {
+public:
+    D3D11Renderer();
+    ~D3D11Renderer() noexcept;
+
+    bool Initialize(HWND hwnd, uint32_t width, uint32_t height);
+    void Shutdown() noexcept;
+    void Resize(uint32_t width, uint32_t height);
+
+    void RenderFrame(const DecodedFrame& frame);
+
+    ID3D11Device* GetDevice() const { return device_.Get(); }
+    ID3D11DeviceContext* GetContext() const { return context_.Get(); }
+
+private:
+    bool CreateDeviceAndSwapChain(HWND hwnd);
+    bool CreateRenderTarget();
+    void CleanupRenderTarget();
+    bool CreateVideoProcessor();
+
+    HWND hwnd_{nullptr};
+    uint32_t windowWidth_{1920};
+    uint32_t windowHeight_{1080};
+    uint32_t videoWidth_{0};
+    uint32_t videoHeight_{0};
+
+    ComPtr<ID3D11Device> device_;
+    ComPtr<ID3D11DeviceContext> context_;
+    ComPtr<IDXGISwapChain> swapChain_;
+    ComPtr<ID3D11RenderTargetView> renderTargetView_;
+
+    ComPtr<ID3D11VideoDevice> videoDevice_;
+    ComPtr<ID3D11VideoContext> videoContext_;
+    ComPtr<ID3D11VideoProcessorEnumerator> videoProcessorEnum_;
+    ComPtr<ID3D11VideoProcessor> videoProcessor_;
+    ComPtr<ID3D11VideoProcessorOutputView> outputView_;
+};
+```
+
+13. *client/include/renderer/video_renderer.h*
+```
+#pragma once
+
+#include "decoder/video_decoder.h"
+#include "protocol.h"
+#include <windows.h>
+#include <cstdint>
+
+class IVideoRenderer {
+public:
+    virtual ~IVideoRenderer() noexcept = default;
+
+    virtual bool Initialize(HWND hwnd, uint32_t width, uint32_t height) = 0;
+    virtual void Shutdown() noexcept = 0;
+
+    virtual void Resize(uint32_t width, uint32_t height) = 0;
+    virtual bool RenderFrame(const DecodedFrame& frame) = 0;
+
+    virtual void UpdateCursorShape(const CursorShapeMessage& shape, const uint8_t* data) = 0;
+    virtual void UpdateCursorPosition(const CursorPositionMessage& pos) = 0;
+
+    virtual ID3D11Device* GetDevice() const = 0;
+    virtual ID3D11DeviceContext* GetContext() const = 0;
+};
+```
+
+14. *client/src/main.cpp*
+```
+#include "protocol.h"
+#include "mmcss.h"
+#include "decoder/ffmpeg_d3d11va_decoder.h"
+#include "renderer/d3d11_renderer.h"
+#include "audio/sdl_opus_player.h"
+#include "input/input_handler.h"
+#include "network/webrtc_client.h"
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_syswm.h>
 #include <nlohmann/json.hpp>
 #include <rtc/rtc.hpp>
-
-#include "FFmpegDecoder.h"
-#include "WebRTCClient.h"
+#include <iostream>
+#include <string>
 
 using json = nlohmann::json;
 
 int main(int argc, char* argv[]) {
-    SetConsoleOutputCP(CP_UTF8);
-    std::cout << "=== Запуск Eidolon Client ===" << std::endl;
+    rtc::InitLogger(rtc::LogLevel::Warning);
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) {
-        std::cerr << "[-] Ошибка SDL: " << SDL_GetError() << std::endl;
+    MMCSSScopedTask mmcss(L"Games");
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
+    std::string signalingUrl = "ws://192.168.1.13:8080";
+    if (argc > 1) {
+        signalingUrl = argv[1];
+        if (signalingUrl.rfind("ws://", 0) != 0) {
+            signalingUrl = "ws://" + signalingUrl;
+        }
+    }
+    std::cout << "[Client] Connecting to signaling server: " << signalingUrl << std::endl;
+
+    std::cout << "[Client] Initializing SDL..." << std::endl;
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_AUDIO) < 0) {
+        std::cerr << "[Client ERROR] SDL_Init failed" << std::endl;
         return -1;
     }
 
+    uint32_t windowWidth = 1920;
+    uint32_t windowHeight = 1080;
+
     SDL_Window* window = SDL_CreateWindow(
-        "Eidolon Stream (Client)",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        1280, 720,
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN
+        "Eidolon Stream Client",
+        SDL_WINDOWPOS_CENTERED,
+        SDL_WINDOWPOS_CENTERED,
+        static_cast<int>(windowWidth),
+        static_cast<int>(windowHeight),
+        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
     );
-    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    SDL_SetYUVConversionMode(SDL_YUV_CONVERSION_BT709);
-    SDL_Texture* texture = nullptr;
 
-    FFmpegDecoder decoder;
-    if (!decoder.Init()) return -1;
+    if (!window) {
+        std::cerr << "[Client ERROR] SDL_CreateWindow failed" << std::endl;
+        SDL_Quit();
+        return -1;
+    }
 
-    WebRTCClient webrtc;
-    if (!webrtc.Init()) return -1;
+    SDL_SysWMinfo wmInfo;
+    SDL_VERSION(&wmInfo.version);
+    SDL_GetWindowWMInfo(window, &wmInfo);
+    HWND hwnd = wmInfo.info.win.window;
 
-    std::mutex queueMutex;
-    std::vector<std::vector<uint8_t>> packetQueue;
+    D3D11Renderer renderer;
+    if (!renderer.Initialize(hwnd, windowWidth, windowHeight)) {
+        std::cerr << "[Client ERROR] Renderer Init Failed" << std::endl;
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return -1;
+    }
 
-    webrtc.onVideoData = [&](const uint8_t* data, size_t size) {
-        std::lock_guard<std::mutex> lock(queueMutex);
-        packetQueue.push_back(std::vector<uint8_t>(data, data + size));
-    };
+    FFmpegD3D11VADecoder decoder;
+    if (!decoder.Initialize(renderer.GetDevice(), renderer.GetContext())) {
+        std::cerr << "[Client ERROR] Decoder Init Failed" << std::endl;
+        renderer.Shutdown();
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return -1;
+    }
 
-    rtc::WebSocket ws;
-    std::atomic<bool> wsConnected(false);
+    SDLOpusPlayer audioPlayer;
+    if (!audioPlayer.Initialize()) {
+        std::cerr << "[Client WARNING] Audio Player Init Failed" << std::endl;
+    }
 
-    ws.onOpen([&]() {
-        wsConnected = true;
-        json reg = { {"type", "register"}, {"role", "client"} };
-        ws.send(reg.dump());
-        webrtc.CreateOffer();
+    InputHandler inputHandler;
+    inputHandler.Initialize(window);
+
+    WebRTCClient client;
+    if (!client.Initialize()) {
+        std::cerr << "[Client ERROR] WebRTC Init Failed" << std::endl;
+        decoder.Shutdown();
+        renderer.Shutdown();
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return -1;
+    }
+
+    inputHandler.SetInputCallback([&](const uint8_t* data, size_t size) {
+        client.SendInputData(data, size);
     });
 
-    webrtc.onLocalDescription = [&](const std::string& sdpStr) { if (wsConnected) ws.send(sdpStr); };
-    webrtc.onLocalCandidate = [&](const std::string& candStr) { if (wsConnected) ws.send(candStr); };
+    client.SetVideoCallback([&](const uint8_t* data, size_t size) {
+        decoder.Decode(data, size);
+    });
+
+    client.SetAudioCallback([&](const uint8_t* data, size_t size) {
+        audioPlayer.DecodeAndPlay(data, size);
+    });
+
+    client.SetCursorShapeCallback([&](const CursorShapeMessage& shape, const uint8_t* data) {
+        inputHandler.UpdateCursorShape(shape, data);
+    });
+
+    client.SetCursorPositionCallback([&](const CursorPositionMessage& pos) {
+        inputHandler.UpdateCursorPosition(pos);
+    });
+
+    decoder.SetFrameCallback([&](const DecodedFrame& frame) {
+        inputHandler.SetHostResolution(frame.width, frame.height);
+        renderer.RenderFrame(frame);
+    });
+
+    rtc::WebSocket ws;
+    ws.onOpen([&]() {
+        std::cout << "[Client WS] Connected, registering as client..." << std::endl;
+        json reg = { {"type", "register"}, {"role", "client"} };
+        ws.send(reg.dump());
+    });
 
     ws.onMessage([&](std::variant<rtc::binary, std::string> data) {
         if (std::holds_alternative<std::string>(data)) {
-            try {
-                auto msg = json::parse(std::get<std::string>(data));
-                if (msg["type"] == "answer") webrtc.SetRemoteDescription(msg["type"], msg["sdp"]);
-                else if (msg["type"] == "ice_candidate") webrtc.AddRemoteCandidate(msg["candidate"], msg["sdpMid"]);
-            } catch (const std::exception& e) {
-                std::cerr << "[-] Ошибка парсинга JSON: " << e.what() << std::endl;
-            }
+            client.ProcessSignalingMessage(std::get<std::string>(data));
+        } else if (std::holds_alternative<rtc::binary>(data)) {
+            const auto& bin = std::get<rtc::binary>(data);
+            std::string str(reinterpret_cast<const char*>(bin.data()), bin.size());
+            client.ProcessSignalingMessage(str);
         }
     });
 
-    std::string serverIp = "192.168.1.13"; 
-    if (argc > 1) {
-        serverIp = argv[1];
-    }
-    
-    std::string wsUrl = "ws://" + serverIp + ":8080";
-    std::cout << "[WS] Подключение к " << wsUrl << "..." << std::endl;
-    ws.open(wsUrl);
+    client.SetSignalingSender([&](const std::string& msg) {
+        if (ws.isOpen()) ws.send(msg);
+    });
+
+    ws.open(signalingUrl);
 
     bool running = true;
     SDL_Event event;
 
     while (running) {
         while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_QUIT) running = false;
-        }
-
-        std::vector<std::vector<uint8_t>> localQueue;
-        {
-            std::lock_guard<std::mutex> lock(queueMutex);
-            std::swap(localQueue, packetQueue); 
-        }
-
-        bool frameUpdated = false;
-        for (const auto& pkt : localQueue) {
-            if (decoder.DecodeAndRender(pkt.data(), pkt.size(), renderer, &texture)) {
-                frameUpdated = true;
+            if (event.type == SDL_QUIT) {
+                running = false;
+            } else if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_RESIZED) {
+                uint32_t w = static_cast<uint32_t>(event.window.data1);
+                uint32_t h = static_cast<uint32_t>(event.window.data2);
+                renderer.Resize(w, h);
+                inputHandler.SetWindowSize(w, h);
+            } else {
+                inputHandler.ProcessEvent(event);
             }
         }
-
-        if (frameUpdated) {
-            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-            SDL_RenderClear(renderer);
-
-            if (texture) {
-                int texW, texH, winW, winH;
-                SDL_QueryTexture(texture, nullptr, nullptr, &texW, &texH);
-                SDL_GetWindowSize(window, &winW, &winH);
-
-                float scale = std::min((float)winW / texW, (float)winH / texH);
-                
-                SDL_Rect dest;
-                dest.w = (int)(texW * scale);
-                dest.h = (int)(texH * scale);
-                dest.x = (winW - dest.w) / 2;
-                dest.y = (winH - dest.h) / 2;
-
-                SDL_RenderCopy(renderer, texture, nullptr, &dest);
-            }
-            SDL_RenderPresent(renderer);
-        }
-
-        SDL_Delay(1); 
+        SDL_Delay(1);
     }
 
-    if (texture) SDL_DestroyTexture(texture);
-    SDL_DestroyRenderer(renderer);
+    ws.close();
+    client.Shutdown();
+    audioPlayer.Shutdown();
+    decoder.Shutdown();
+    renderer.Shutdown();
+
     SDL_DestroyWindow(window);
     SDL_Quit();
 
@@ -462,1017 +716,3007 @@ int main(int argc, char* argv[]) {
 }
 ```
 
-9. *client/src/WebRTCClient.cpp*
+15. *client/src/audio/sdl_opus_player.cpp*
 ```
-#include "WebRTCClient.h"
+#include "audio/sdl_opus_player.h"
+
+SDLOpusPlayer::SDLOpusPlayer() = default;
+
+SDLOpusPlayer::~SDLOpusPlayer() noexcept {
+    Shutdown();
+}
+
+bool SDLOpusPlayer::Initialize() {
+    Shutdown();
+
+    int error = OPUS_OK;
+    decoder_ = opus_decoder_create(kSampleRate, kChannels, &error);
+    if (error != OPUS_OK || !decoder_) {
+        return false;
+    }
+
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
+        Shutdown();
+        return false;
+    }
+
+    SDL_AudioSpec desiredSpec = {};
+    desiredSpec.freq = kSampleRate;
+    desiredSpec.format = AUDIO_F32SYS;
+    desiredSpec.channels = kChannels;
+    desiredSpec.samples = 480;
+    desiredSpec.callback = nullptr;
+
+    SDL_AudioSpec obtainedSpec = {};
+    deviceId_ = SDL_OpenAudioDevice(nullptr, 0, &desiredSpec, &obtainedSpec, 0);
+    if (deviceId_ == 0) {
+        Shutdown();
+        return false;
+    }
+
+    SDL_PauseAudioDevice(deviceId_, 0);
+    return true;
+}
+
+void SDLOpusPlayer::Shutdown() noexcept {
+    if (deviceId_ != 0) {
+        SDL_CloseAudioDevice(deviceId_);
+        deviceId_ = 0;
+    }
+
+    if (decoder_) {
+        opus_decoder_destroy(decoder_);
+        decoder_ = nullptr;
+    }
+
+    SDL_QuitSubSystem(SDL_INIT_AUDIO);
+}
+
+bool SDLOpusPlayer::DecodeAndPlay(const uint8_t* data, size_t size) {
+    if (!decoder_ || deviceId_ == 0 || !data || size == 0) {
+        return false;
+    }
+
+    int samplesDecoded = opus_decode_float(
+        decoder_,
+        data,
+        static_cast<opus_int32>(size),
+        pcmOutBuffer_,
+        kMaxFrameSize,
+        0
+    );
+
+    if (samplesDecoded <= 0) {
+        return false;
+    }
+
+    uint32_t currentQueuedBytes = SDL_GetQueuedAudioSize(deviceId_);
+    if (currentQueuedBytes > kMaxLatencyBytes) {
+        SDL_ClearQueuedAudio(deviceId_);
+    }
+
+    uint32_t bytesToWrite = static_cast<uint32_t>(samplesDecoded * kChannels * sizeof(float));
+    return SDL_QueueAudio(deviceId_, pcmOutBuffer_, bytesToWrite) == 0;
+}
+```
+
+16. *client/src/decoder/ffmpeg_d3d11va_decoder.cpp*
+```
+#include "decoder/ffmpeg_d3d11va_decoder.h"
+#include <iostream>
+
+FFmpegD3D11VADecoder::FFmpegD3D11VADecoder() = default;
+
+FFmpegD3D11VADecoder::~FFmpegD3D11VADecoder() noexcept {
+    Shutdown();
+}
+
+AVPixelFormat FFmpegD3D11VADecoder::GetHwFormat(AVCodecContext* /*ctx*/, const AVPixelFormat* pix_fmts) {
+    while (*pix_fmts != AV_PIX_FMT_NONE) {
+        if (*pix_fmts == AV_PIX_FMT_D3D11) {
+            return AV_PIX_FMT_D3D11;
+        }
+        pix_fmts++;
+    }
+    return AV_PIX_FMT_NONE;
+}
+
+bool FFmpegD3D11VADecoder::InitializeHardwareContext() {
+    hwDeviceCtx_ = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
+    if (!hwDeviceCtx_) {
+        return false;
+    }
+
+    auto* hwctx = reinterpret_cast<AVHWDeviceContext*>(hwDeviceCtx_->data);
+    auto* d3d11ctx = reinterpret_cast<AVD3D11VADeviceContext*>(hwctx->hwctx);
+
+    device_->AddRef();
+    d3d11ctx->device = device_.Get();
+    d3d11ctx->lock = nullptr;
+    d3d11ctx->unlock = nullptr;
+
+    if (av_hwdevice_ctx_init(hwDeviceCtx_) < 0) {
+        av_buffer_unref(&hwDeviceCtx_);
+        return false;
+    }
+
+    return true;
+}
+
+bool FFmpegD3D11VADecoder::Initialize(ID3D11Device* device, ID3D11DeviceContext* context) {
+    if (!device || !context) {
+        return false;
+    }
+
+    Shutdown();
+
+    device_ = device;
+    context_ = context;
+
+    codec_ = avcodec_find_decoder(AV_CODEC_ID_H264);
+    if (!codec_) {
+        Shutdown();
+        return false;
+    }
+
+    parserContext_ = av_parser_init(codec_->id);
+    if (!parserContext_) {
+        Shutdown();
+        return false;
+    }
+
+    codecContext_ = avcodec_alloc_context3(codec_);
+    if (!codecContext_) {
+        Shutdown();
+        return false;
+    }
+
+    if (!InitializeHardwareContext()) {
+        Shutdown();
+        return false;
+    }
+
+    codecContext_->hw_device_ctx = av_buffer_ref(hwDeviceCtx_);
+    codecContext_->get_format = GetHwFormat;
+    codecContext_->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    codecContext_->flags2 |= AV_CODEC_FLAG2_FAST;
+    codecContext_->thread_count = 1;
+
+    if (avcodec_open2(codecContext_, codec_, nullptr) < 0) {
+        Shutdown();
+        return false;
+    }
+
+    packet_ = av_packet_alloc();
+    frame_ = av_frame_alloc();
+
+    if (!packet_ || !frame_) {
+        Shutdown();
+        return false;
+    }
+
+    return true;
+}
+
+void FFmpegD3D11VADecoder::Shutdown() noexcept {
+    if (frame_) {
+        av_frame_free(&frame_);
+        frame_ = nullptr;
+    }
+
+    if (packet_) {
+        av_packet_free(&packet_);
+        packet_ = nullptr;
+    }
+
+    if (codecContext_) {
+        avcodec_free_context(&codecContext_);
+        codecContext_ = nullptr;
+    }
+
+    if (parserContext_) {
+        av_parser_close(parserContext_);
+        parserContext_ = nullptr;
+    }
+
+    if (hwDeviceCtx_) {
+        av_buffer_unref(&hwDeviceCtx_);
+        hwDeviceCtx_ = nullptr;
+    }
+
+    codec_ = nullptr;
+    context_.Reset();
+    device_.Reset();
+}
+
+bool FFmpegD3D11VADecoder::Decode(const uint8_t* data, size_t size) {
+    if (!codecContext_ || !packet_ || !frame_ || !data || size == 0) {
+        return false;
+    }
+
+    uint8_t* parseData = const_cast<uint8_t*>(data);
+    int parseSize = static_cast<int>(size);
+
+    while (parseSize > 0) {
+        int parsedBytes = av_parser_parse2(
+            parserContext_,
+            codecContext_,
+            &packet_->data,
+            &packet_->size,
+            parseData,
+            parseSize,
+            AV_NOPTS_VALUE,
+            AV_NOPTS_VALUE,
+            0
+        );
+
+        if (parsedBytes < 0) {
+            return false;
+        }
+
+        parseData += parsedBytes;
+        parseSize -= parsedBytes;
+
+        if (packet_->size == 0) {
+            continue;
+        }
+
+        int sendResult = avcodec_send_packet(codecContext_, packet_);
+        if (sendResult < 0) {
+            av_packet_unref(packet_);
+            return false;
+        }
+
+        while (sendResult >= 0) {
+            int receiveResult = avcodec_receive_frame(codecContext_, frame_);
+            if (receiveResult == AVERROR(EAGAIN) || receiveResult == AVERROR_EOF) {
+                break;
+            }
+
+            if (receiveResult < 0) {
+                av_packet_unref(packet_);
+                return false;
+            }
+
+            if (frame_->format == AV_PIX_FMT_D3D11 && frameCallback_) {
+                auto* texture = reinterpret_cast<ID3D11Texture2D*>(frame_->data[0]);
+                auto subresourceIndex = static_cast<uint32_t>(reinterpret_cast<intptr_t>(frame_->data[1]));
+
+                DecodedFrame decodedFrame;
+                decodedFrame.texture = texture;
+                decodedFrame.subresourceIndex = subresourceIndex;
+                decodedFrame.width = static_cast<uint32_t>(frame_->width);
+                decodedFrame.height = static_cast<uint32_t>(frame_->height);
+
+                frameCallback_(decodedFrame);
+            }
+
+            av_frame_unref(frame_);
+        }
+
+        av_packet_unref(packet_);
+    }
+
+    return true;
+}
+```
+
+17. *client/src/input/input_handler.cpp*
+```
+#include "input/input_handler.h"
+#include <algorithm>
+#include <iostream>
+
+InputHandler::InputHandler() {
+    instance_ = this;
+}
+
+InputHandler::~InputHandler() noexcept {
+    SetMouseCaptured(false);
+    if (currentSdlCursor_) {
+        SDL_FreeCursor(currentSdlCursor_);
+        currentSdlCursor_ = nullptr;
+    }
+    instance_ = nullptr;
+}
+
+bool InputHandler::Initialize(SDL_Window* window) {
+    window_ = window;
+    int w, h;
+    SDL_GetWindowSize(window, &w, &h);
+    windowWidth_ = static_cast<uint32_t>(w);
+    windowHeight_ = static_cast<uint32_t>(h);
+
+    SetMouseCaptured(true);
+    return true;
+}
+
+void InputHandler::SetMouseCaptured(bool captured) {
+    mouseCaptured_ = captured;
+    if (window_) {
+        if (captured) {
+            SDL_SetWindowGrab(window_, SDL_TRUE);
+            SDL_SetWindowKeyboardGrab(window_, SDL_TRUE);
+            if (!hostCursorVisible_) {
+                SDL_SetRelativeMouseMode(SDL_TRUE);
+            } else {
+                SDL_SetRelativeMouseMode(SDL_FALSE);
+                SDL_ShowCursor(SDL_ENABLE);
+            }
+        } else {
+            SDL_SetRelativeMouseMode(SDL_FALSE);
+            SDL_ShowCursor(SDL_ENABLE);
+            SDL_SetWindowGrab(window_, SDL_FALSE);
+            SDL_SetWindowKeyboardGrab(window_, SDL_FALSE);
+        }
+    }
+
+    if (captured) {
+        if (!keyboardHook_) {
+            keyboardHook_ = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, GetModuleHandleW(nullptr), 0);
+        }
+        std::cout << "[Input] Captured (Shift+Escape to release, Dual-Mode Active)" << std::endl;
+    } else {
+        if (keyboardHook_) {
+            UnhookWindowsHookEx(keyboardHook_);
+            keyboardHook_ = nullptr;
+        }
+        std::cout << "[Input] Released (Click inside window to focus)" << std::endl;
+    }
+}
+
+void InputHandler::UpdateCursorPosition(const CursorPositionMessage& pos) {
+    bool newVisible = (pos.visible != 0);
+
+    // Переключаем режим SDL ТОЛЬКО когда статус видимости реально изменился (вход в 3D игру)
+    if (newVisible != hostCursorVisible_) {
+        hostCursorVisible_ = newVisible;
+        if (mouseCaptured_ && window_) {
+            if (!hostCursorVisible_) {
+                // 3D игра скрыла курсор: захватываем дельты
+                SDL_SetRelativeMouseMode(SDL_TRUE);
+            } else {
+                // Курсор снова на экране: возвращаем локальный курсор без скачков
+                SDL_SetRelativeMouseMode(SDL_FALSE);
+                SDL_ShowCursor(SDL_ENABLE);
+            }
+        }
+    }
+}
+
+void InputHandler::UpdateCursorShape(const CursorShapeMessage& shape, const uint8_t* rgbaData) {
+    if (!rgbaData || shape.width == 0 || shape.height == 0) return;
+
+    SDL_Surface* surface = SDL_CreateRGBSurfaceWithFormatFrom(
+        const_cast<void*>(reinterpret_cast<const void*>(rgbaData)),
+        shape.width,
+        shape.height,
+        32,
+        shape.width * 4,
+        SDL_PIXELFORMAT_BGRA32
+    );
+
+    if (surface) {
+        SDL_Cursor* newCursor = SDL_CreateColorCursor(surface, shape.hotspotX, shape.hotspotY);
+        if (newCursor) {
+            SDL_SetCursor(newCursor);
+            if (currentSdlCursor_) {
+                SDL_FreeCursor(currentSdlCursor_);
+            }
+            currentSdlCursor_ = newCursor;
+        }
+        SDL_FreeSurface(surface);
+    }
+}
+
+LRESULT CALLBACK InputHandler::LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION && instance_ && instance_->mouseCaptured_) {
+        auto* kbd = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+
+        if (kbd->vkCode == VK_LWIN || kbd->vkCode == VK_RWIN) {
+            bool isDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
+            if (instance_->inputCallback_) {
+                KeyboardMessage msg;
+                msg.type = MessageType::InputKeyboard;
+                msg.vkCode = static_cast<uint16_t>(kbd->vkCode);
+                msg.pressed = isDown ? 1 : 0;
+                instance_->inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+            }
+            return 1;
+        }
+    }
+    return CallNextHookEx(keyboardHook_, nCode, wParam, lParam);
+}
+
+static uint16_t SDLScancodeToVK(SDL_Scancode scancode) {
+    switch (scancode) {
+        case SDL_SCANCODE_A: return 'A';
+        case SDL_SCANCODE_B: return 'B';
+        case SDL_SCANCODE_C: return 'C';
+        case SDL_SCANCODE_D: return 'D';
+        case SDL_SCANCODE_E: return 'E';
+        case SDL_SCANCODE_F: return 'F';
+        case SDL_SCANCODE_G: return 'G';
+        case SDL_SCANCODE_H: return 'H';
+        case SDL_SCANCODE_I: return 'I';
+        case SDL_SCANCODE_J: return 'J';
+        case SDL_SCANCODE_K: return 'K';
+        case SDL_SCANCODE_L: return 'L';
+        case SDL_SCANCODE_M: return 'M';
+        case SDL_SCANCODE_N: return 'N';
+        case SDL_SCANCODE_O: return 'O';
+        case SDL_SCANCODE_P: return 'P';
+        case SDL_SCANCODE_Q: return 'Q';
+        case SDL_SCANCODE_R: return 'R';
+        case SDL_SCANCODE_S: return 'S';
+        case SDL_SCANCODE_T: return 'T';
+        case SDL_SCANCODE_U: return 'U';
+        case SDL_SCANCODE_V: return 'V';
+        case SDL_SCANCODE_W: return 'W';
+        case SDL_SCANCODE_X: return 'X';
+        case SDL_SCANCODE_Y: return 'Y';
+        case SDL_SCANCODE_Z: return 'Z';
+
+        case SDL_SCANCODE_1: return '1';
+        case SDL_SCANCODE_2: return '2';
+        case SDL_SCANCODE_3: return '3';
+        case SDL_SCANCODE_4: return '4';
+        case SDL_SCANCODE_5: return '5';
+        case SDL_SCANCODE_6: return '6';
+        case SDL_SCANCODE_7: return '7';
+        case SDL_SCANCODE_8: return '8';
+        case SDL_SCANCODE_9: return '9';
+        case SDL_SCANCODE_0: return '0';
+
+        case SDL_SCANCODE_COMMA: return VK_OEM_COMMA;
+        case SDL_SCANCODE_PERIOD: return VK_OEM_PERIOD;
+        case SDL_SCANCODE_SEMICOLON: return VK_OEM_1;
+        case SDL_SCANCODE_APOSTROPHE: return VK_OEM_7;
+        case SDL_SCANCODE_LEFTBRACKET: return VK_OEM_4;
+        case SDL_SCANCODE_RIGHTBRACKET: return VK_OEM_6;
+        case SDL_SCANCODE_GRAVE: return VK_OEM_3;
+        case SDL_SCANCODE_SLASH: return VK_OEM_2;
+        case SDL_SCANCODE_BACKSLASH: return VK_OEM_5;
+        case SDL_SCANCODE_MINUS: return VK_OEM_MINUS;
+        case SDL_SCANCODE_EQUALS: return VK_OEM_PLUS;
+
+        case SDL_SCANCODE_RETURN: return VK_RETURN;
+        case SDL_SCANCODE_ESCAPE: return VK_ESCAPE;
+        case SDL_SCANCODE_BACKSPACE: return VK_BACK;
+        case SDL_SCANCODE_TAB: return VK_TAB;
+        case SDL_SCANCODE_SPACE: return VK_SPACE;
+        case SDL_SCANCODE_CAPSLOCK: return VK_CAPITAL;
+
+        case SDL_SCANCODE_LCTRL: return VK_LCONTROL;
+        case SDL_SCANCODE_LSHIFT: return VK_LSHIFT;
+        case SDL_SCANCODE_LALT: return VK_LMENU;
+        case SDL_SCANCODE_LGUI: return VK_LWIN;
+        case SDL_SCANCODE_RCTRL: return VK_RCONTROL;
+        case SDL_SCANCODE_RSHIFT: return VK_RSHIFT;
+        case SDL_SCANCODE_RALT: return VK_RMENU;
+        case SDL_SCANCODE_RGUI: return VK_RWIN;
+
+        case SDL_SCANCODE_UP: return VK_UP;
+        case SDL_SCANCODE_DOWN: return VK_DOWN;
+        case SDL_SCANCODE_LEFT: return VK_LEFT;
+        case SDL_SCANCODE_RIGHT: return VK_RIGHT;
+        case SDL_SCANCODE_INSERT: return VK_INSERT;
+        case SDL_SCANCODE_DELETE: return VK_DELETE;
+        case SDL_SCANCODE_HOME: return VK_HOME;
+        case SDL_SCANCODE_END: return VK_END;
+        case SDL_SCANCODE_PAGEUP: return VK_PRIOR;
+        case SDL_SCANCODE_PAGEDOWN: return VK_NEXT;
+
+        case SDL_SCANCODE_F1: return VK_F1;
+        case SDL_SCANCODE_F2: return VK_F2;
+        case SDL_SCANCODE_F3: return VK_F3;
+        case SDL_SCANCODE_F4: return VK_F4;
+        case SDL_SCANCODE_F5: return VK_F5;
+        case SDL_SCANCODE_F6: return VK_F6;
+        case SDL_SCANCODE_F7: return VK_F7;
+        case SDL_SCANCODE_F8: return VK_F8;
+        case SDL_SCANCODE_F9: return VK_F9;
+        case SDL_SCANCODE_F10: return VK_F10;
+        case SDL_SCANCODE_F11: return VK_F11;
+        case SDL_SCANCODE_F12: return VK_F12;
+
+        case SDL_SCANCODE_KP_0: return VK_NUMPAD0;
+        case SDL_SCANCODE_KP_1: return VK_NUMPAD1;
+        case SDL_SCANCODE_KP_2: return VK_NUMPAD2;
+        case SDL_SCANCODE_KP_3: return VK_NUMPAD3;
+        case SDL_SCANCODE_KP_4: return VK_NUMPAD4;
+        case SDL_SCANCODE_KP_5: return VK_NUMPAD5;
+        case SDL_SCANCODE_KP_6: return VK_NUMPAD6;
+        case SDL_SCANCODE_KP_7: return VK_NUMPAD7;
+        case SDL_SCANCODE_KP_8: return VK_NUMPAD8;
+        case SDL_SCANCODE_KP_9: return VK_NUMPAD9;
+        case SDL_SCANCODE_KP_DIVIDE: return VK_DIVIDE;
+        case SDL_SCANCODE_KP_MULTIPLY: return VK_MULTIPLY;
+        case SDL_SCANCODE_KP_MINUS: return VK_SUBTRACT;
+        case SDL_SCANCODE_KP_PLUS: return VK_ADD;
+        case SDL_SCANCODE_KP_ENTER: return VK_RETURN;
+        case SDL_SCANCODE_KP_PERIOD: return VK_DECIMAL;
+        case SDL_SCANCODE_NUMLOCKCLEAR: return VK_NUMLOCK;
+        case SDL_SCANCODE_SCROLLLOCK: return VK_SCROLL;
+        case SDL_SCANCODE_PRINTSCREEN: return VK_SNAPSHOT;
+        case SDL_SCANCODE_PAUSE: return VK_PAUSE;
+
+        default: return 0;
+    }
+}
+
+void InputHandler::ProcessEvent(const SDL_Event& event) {
+    if (event.type == SDL_MOUSEBUTTONDOWN) {
+        if (!mouseCaptured_) {
+            SetMouseCaptured(true);
+        }
+
+        if (inputCallback_) {
+            MouseButtonMessage msg;
+            msg.type = MessageType::InputMouseButton;
+            msg.button = event.button.button;
+            msg.pressed = 1;
+            inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+        }
+    } else if (event.type == SDL_MOUSEBUTTONUP) {
+        if (inputCallback_) {
+            MouseButtonMessage msg;
+            msg.type = MessageType::InputMouseButton;
+            msg.button = event.button.button;
+            msg.pressed = 0;
+            inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+        }
+    } else if (event.type == SDL_MOUSEMOTION) {
+        if (mouseCaptured_ && inputCallback_) {
+            if (hostCursorVisible_) {
+                int clampedX = std::clamp(event.motion.x, 0, static_cast<int>(windowWidth_));
+                int clampedY = std::clamp(event.motion.y, 0, static_cast<int>(windowHeight_));
+
+                MouseAbsoluteMessage msg;
+                msg.type = MessageType::InputMouseAbsolute;
+                msg.x = static_cast<uint16_t>((static_cast<uint64_t>(clampedX) * 65535) / windowWidth_);
+                msg.y = static_cast<uint16_t>((static_cast<uint64_t>(clampedY) * 65535) / windowHeight_);
+                inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+            } else {
+                if (event.motion.xrel != 0 || event.motion.yrel != 0) {
+                    MouseRelativeMessage msg;
+                    msg.type = MessageType::InputMouseRelative;
+                    msg.deltaX = event.motion.xrel;
+                    msg.deltaY = event.motion.yrel;
+                    inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+                }
+            }
+        }
+    } else if (event.type == SDL_MOUSEWHEEL) {
+        if (mouseCaptured_ && inputCallback_) {
+            MouseWheelMessage msg;
+            msg.type = MessageType::InputMouseWheel;
+            msg.deltaX = event.wheel.x;
+            msg.deltaY = event.wheel.y;
+            inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+        }
+    } else if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
+        if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == SDL_SCANCODE_ESCAPE && (SDL_GetModState() & KMOD_SHIFT)) {
+            SetMouseCaptured(false);
+            return;
+        }
+
+        if (mouseCaptured_ && inputCallback_) {
+            uint16_t vk = SDLScancodeToVK(event.key.keysym.scancode);
+            if (vk != 0) {
+                KeyboardMessage msg;
+                msg.type = MessageType::InputKeyboard;
+                msg.vkCode = vk;
+                msg.pressed = (event.type == SDL_KEYDOWN) ? 1 : 0;
+                inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+            }
+        }
+    }
+}
+```
+
+18. *client/src/network/webrtc_client.cpp*
+```
+#include "network/webrtc_client.h"
 #include <nlohmann/json.hpp>
 #include <iostream>
-#include <rtc/h264rtpdepacketizer.hpp>
 
 using json = nlohmann::json;
 
-WebRTCClient::WebRTCClient() {}
-WebRTCClient::~WebRTCClient() {}
+WebRTCClient::WebRTCClient() = default;
 
-bool WebRTCClient::Init() {
+WebRTCClient::~WebRTCClient() noexcept {
+    Shutdown();
+}
+
+bool WebRTCClient::Initialize() {
+    Shutdown();
+
     rtc::Configuration config;
-    config.iceServers.emplace_back("stun:stun.l.google.com:19302");
     config.enableIceTcp = false;
-    
-    pc = std::make_shared<rtc::PeerConnection>(config);
 
-    rtc::Description::Video media("video", rtc::Description::Direction::RecvOnly);
-    media.addH264Codec(96);
-    media.addSSRC(7777, "video-stream");
-    
-    videoTrack = pc->addTrack(media);
+    pc_ = std::make_shared<rtc::PeerConnection>(config);
 
-    videoTrack->onOpen([this]() {
-        std::cout << "[WebRTC] Видео-канал успешно открыт! Ждем кадры..." << std::endl;
-    });
-
-    videoTrack->onMessage([this](std::variant<rtc::binary, std::string> data) {
-        if (std::holds_alternative<rtc::binary>(data)) {
-            auto& bin = std::get<rtc::binary>(data);
-            const uint8_t* ptr = reinterpret_cast<const uint8_t*>(bin.data());
-            size_t size = bin.size();
-
-            if (onVideoData) {
-                onVideoData(ptr, size);
-            }
+    pc_->onLocalDescription([this](rtc::Description desc) {
+        std::cout << "[WebRTC Client] Local Description (" << desc.typeString() << ") -> Signaling" << std::endl;
+        if (signalingSend_) {
+            json msg = { {"type", desc.typeString()}, {"sdp", std::string(desc)} };
+            signalingSend_(msg.dump());
         }
     });
 
-    pc->onStateChange([](rtc::PeerConnection::State state) {
-        std::cout << "[WebRTC] Состояние соединения: " << state << std::endl;
-    });
-
-    pc->onLocalCandidate([this](rtc::Candidate candidate) {
-        json msg = {
-            {"type", "ice_candidate"},
-            {"candidate", candidate.candidate()},
-            {"sdpMid", candidate.mid()}
-        };
-        if (onLocalCandidate) onLocalCandidate(msg.dump());
-    });
-
-    pc->onLocalDescription([this](rtc::Description description) {
-        json msg = {
-            {"type", description.typeString()},
-            {"sdp", std::string(description)}
-        };
-        if (onLocalDescription) onLocalDescription(msg.dump());
-    });
-
-    std::cout << "[+] WebRTC Client успешно инициализирован." << std::endl;
-    return true;
-}
-
-void WebRTCClient::CreateOffer() {
-    std::cout << "[WebRTC] Создаем Offer для подключения к хосту..." << std::endl;
-    pc->setLocalDescription(); 
-}
-
-void WebRTCClient::SetRemoteDescription(const std::string& type, const std::string& sdp) {
-    std::cout << "[WebRTC] Применяем Remote Description типа: " << type << std::endl;
-    pc->setRemoteDescription(rtc::Description(sdp, type));
-}
-
-void WebRTCClient::AddRemoteCandidate(const std::string& candidate, const std::string& mid) {
-    pc->addRemoteCandidate(rtc::Candidate(candidate, mid));
-}
-```
-
-10. *client/src/WebRTCClient.h*
-```
-#pragma once
-#include <rtc/rtc.hpp>
-#include <string>
-#include <functional>
-#include <memory>
-
-class WebRTCClient {
-public:
-    WebRTCClient();
-    ~WebRTCClient();
-
-    bool Init();
-    
-    std::function<void(const std::string&)> onLocalDescription;
-    std::function<void(const std::string&)> onLocalCandidate;
-    
-    std::function<void(const uint8_t*, size_t)> onVideoData;
-
-    void SetRemoteDescription(const std::string& type, const std::string& sdp);
-    void AddRemoteCandidate(const std::string& candidate, const std::string& mid);
-
-    void CreateOffer();
-
-private:
-    std::shared_ptr<rtc::PeerConnection> pc;
-    std::shared_ptr<rtc::Track> videoTrack;
-};
-```
-
-11. *common/CMakeLists.txt*
-```
-
-```
-
-12. *host/CMakeLists.txt*
-```
-project(HostWorker)
-
-find_package(LibDataChannel CONFIG REQUIRED)
-find_package(nlohmann_json CONFIG REQUIRED)
-
-add_executable(HostWorker 
-    src/main.cpp 
-    src/DXGICapture.cpp
-    src/SignalingClient.cpp 
-    src/WebRTCManager.cpp 
-    src/NVENCEncoder.cpp
-)
-
-target_link_libraries(HostWorker PRIVATE
-    LibDataChannel::LibDataChannel 
-    nlohmann_json::nlohmann_json 
-    d3d11 
-    dxgi
-)
-
-add_executable(ListMonitors src/ListMonitors.cpp)
-
-target_link_libraries(ListMonitors PRIVATE 
-    d3d11 
-    dxgi
-)
-```
-
-13. *host/config/host.json*
-```
-
-```
-
-14. *host/src/DXGICapture.cpp*
-```
-#include "DXGICapture.h"
-#include <iostream>
-#include <thread>
-#include <string>
-
-#define NOMINMAX
-#include <windows.h>
-#include <dxgi1_2.h>
-
-using Microsoft::WRL::ComPtr;
-
-DXGICapture::DXGICapture() {}
-
-DXGICapture::~DXGICapture() {
-    if (deskDupl) deskDupl.Reset();
-}
-
-bool DXGICapture::Init() {
-    ComPtr<IDXGIFactory1> factory;
-    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return false;
-
-    ComPtr<IDXGIOutputDuplication> newDupl;
-    ComPtr<ID3D11Device> bestDevice;
-    ComPtr<ID3D11DeviceContext> bestContext;
-    UINT chosenAdapter = 0, chosenOutput = 0;
-
-    std::cout << "[DXGI] Сканирование всех адаптеров и мониторов..." << std::endl;
-
-    ComPtr<IDXGIAdapter1> adapter;
-    for (UINT a = 0; factory->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; ++a) {
-        ComPtr<IDXGIOutput> output;
-        for (UINT o = 0; adapter->EnumOutputs(o, &output) != DXGI_ERROR_NOT_FOUND; ++o) {
-            DXGI_OUTPUT_DESC desc;
-            output->GetDesc(&desc);
-            if (!desc.AttachedToDesktop) continue;
-
-            ComPtr<ID3D11Device> tempDevice;
-            ComPtr<ID3D11DeviceContext> tempContext;
-            D3D_FEATURE_LEVEL featureLevel;
-            D3D_FEATURE_LEVEL featureTypes[] = { D3D_FEATURE_LEVEL_11_0 };
-            
-            HRESULT hrD3D = D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, 
-                                              featureTypes, 1, D3D11_SDK_VERSION, 
-                                              &tempDevice, &featureLevel, &tempContext);
-            if (FAILED(hrD3D)) continue;
-
-            MONITORINFOEXW mi = { sizeof(mi) };
-            std::wstring deviceStr = L"";
-            std::string devName = "Unknown";
-            if (GetMonitorInfoW(desc.Monitor, &mi)) {
-                DISPLAY_DEVICEW dd = { sizeof(dd) };
-                if (EnumDisplayDevicesW(mi.szDevice, 0, &dd, 0)) {
-                    deviceStr = dd.DeviceString;
-                    std::wstring ws(dd.DeviceString);
-                    devName = std::string(ws.begin(), ws.end());
-                }
-            }
-
-            bool isVirtual = (deviceStr.find(L"Indirect") != std::wstring::npos) ||
-                             (deviceStr.find(L"Virtual") != std::wstring::npos) ||
-                             (deviceStr.find(L"Idd") != std::wstring::npos) ||
-                             (deviceStr.find(L"Parsec") != std::wstring::npos) ||
-                             (deviceStr.find(L"VDD") != std::wstring::npos) ||
-                             (deviceStr.find(L"MTT") != std::wstring::npos);
-
-            std::cout << "  -> Адаптер [" << a << "] Монитор [" << o << "]: " << devName 
-                      << (isVirtual ? " [ВИРТУАЛЬНЫЙ]" : "") << std::endl;
-
-            ComPtr<IDXGIOutput1> output1;
-            if (FAILED(output.As(&output1))) continue;
-
-            ComPtr<IDXGIOutputDuplication> duplTest;
-            HRESULT hr = output1->DuplicateOutput(tempDevice.Get(), &duplTest);
-            
-            if (SUCCEEDED(hr)) {
-                if (isVirtual) {
-                    newDupl = duplTest;
-                    bestDevice = tempDevice;
-                    bestContext = tempContext;
-                    chosenAdapter = a; chosenOutput = o;
-                    width = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
-                    height = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
-                    std::cout << "[+] Приоритетно выбран ВИРТУАЛЬНЫЙ монитор!" << std::endl;
-                    goto SearchDone; 
-                }
-
-                if (!newDupl) {
-                    newDupl = duplTest;
-                    bestDevice = tempDevice;
-                    bestContext = tempContext;
-                    chosenAdapter = a; chosenOutput = o;
-                    width = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
-                    height = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
-                }
-            } else {
-                std::cerr << "     [x] Ошибка DuplicateOutput (код " << std::hex << hr << std::dec << ")" << std::endl;
-            }
+    pc_->onLocalCandidate([this](rtc::Candidate cand) {
+        if (signalingSend_) {
+            json msg = { {"type", "ice_candidate"}, {"candidate", cand.candidate()}, {"sdpMid", cand.mid()} };
+            signalingSend_(msg.dump());
         }
-    }
+    });
 
-SearchDone:
-    if (!newDupl) return false;
-
-    deskDupl = newDupl;
-    d3dDevice = bestDevice;
-    d3dContext = bestContext;
-    
-    std::cout << "[+] DXGI успешно захватил Адаптер " << chosenAdapter << " Монитор " << chosenOutput 
-              << " (" << width << "x" << height << ")" << std::endl;
-    return true;
-}
-
-bool DXGICapture::HandleAccessLost() {
-    if (deskDupl) deskDupl.Reset(); 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000)); 
-    
-    std::cout << "[-] Потерян доступ к монитору. Попытка восстановления..." << std::endl;
-    if (Init()) {
-        std::cout << "[+] Доступ к монитору успешно восстановлен!" << std::endl;
-        return true;
-    }
-    return false;
-}
-
-ID3D11Texture2D* DXGICapture::AcquireFrame() {
-    if (!deskDupl) {
-        HandleAccessLost();
-        return nullptr;
-    }
-
-    DXGI_OUTDUPL_FRAME_INFO frameInfo;
-    ComPtr<IDXGIResource> desktopResource;
-    HRESULT hr = deskDupl->AcquireNextFrame(500, &frameInfo, &desktopResource);
-    
-    if (hr == DXGI_ERROR_ACCESS_LOST) {
-        HandleAccessLost();
-        return nullptr;
-    }
-    if (hr == DXGI_ERROR_WAIT_TIMEOUT || FAILED(hr)) return nullptr;
-
-    ComPtr<ID3D11Texture2D> acquiredTexture;
-    if (FAILED(desktopResource.As(&acquiredTexture))) {
-        deskDupl->ReleaseFrame();
-        return nullptr;
-    }
-
-    return acquiredTexture.Detach();
-}
-
-void DXGICapture::UnlockFrame() {
-    if (deskDupl) deskDupl->ReleaseFrame();
-}
-```
-
-15. *host/src/DXGICapture.h*
-```
-#pragma once
-#include <d3d11.h>
-#include <dxgi1_2.h>
-#include <wrl/client.h>
-#include <iostream>
-
-using Microsoft::WRL::ComPtr;
-
-class DXGICapture {
-public:
-    DXGICapture();
-    ~DXGICapture();
-
-    bool Init();
-    
-    ID3D11Texture2D* AcquireFrame();
-
-    void UnlockFrame();
-    
-    ID3D11Device* GetDevice() { return d3dDevice.Get(); }
-    uint32_t GetWidth() const { return width; }
-    uint32_t GetHeight() const { return height; }
-
-private:
-    ComPtr<ID3D11Device> d3dDevice;
-    ComPtr<ID3D11DeviceContext> d3dContext;
-    ComPtr<IDXGIOutputDuplication> deskDupl;
-
-    uint32_t width = 0;
-    uint32_t height = 0;
-
-    bool HandleAccessLost();
-};
-```
-
-16. *host/src/ListMonitors.cpp*
-```
-#include <iostream>
-#include <vector>
-#include <string>
-#include <windows.h>
-#include <d3d11.h>
-#include <dxgi1_2.h>
-#include <wrl/client.h>
-
-#pragma comment(lib, "d3d11.lib")
-#pragma comment(lib, "dxgi.lib")
-
-using Microsoft::WRL::ComPtr;
-
-std::string WStringToString(const std::wstring& wstr) {
-    if (wstr.empty()) return std::string();
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
-    std::string strTo(size_needed, 0);
-    WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
-    return strTo;
-}
-
-int main() {
-    SetConsoleOutputCP(CP_UTF8);
-
-    std::cout << "==========================================\n";
-    std::cout << "    DXGI Monitor Enumeration Tool\n";
-    std::cout << "==========================================\n\n";
-
-    ComPtr<IDXGIFactory1> factory;
-    HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
-    if (FAILED(hr)) {
-        std::cerr << "[-] Ошибка: Не удалось создать IDXGIFactory1. HRESULT: 0x" << std::hex << hr << std::endl;
-        return -1;
-    }
-
-    ComPtr<IDXGIAdapter1> adapter;
-    UINT adapterIndex = 0;
-    bool foundAnyMonitor = false;
-
-    while (factory->EnumAdapters1(adapterIndex, &adapter) != DXGI_ERROR_NOT_FOUND) {
-        DXGI_ADAPTER_DESC1 adapterDesc;
-        adapter->GetDesc1(&adapterDesc);
+    pc_->onDataChannel([this](std::shared_ptr<rtc::DataChannel> dc) {
+        std::string label = dc->label();
+        std::cout << "[WebRTC Client] Inbound DataChannel: " << label << std::endl;
         
-        std::string adapterName = WStringToString(adapterDesc.Description);
-        std::cout << "[Adapter " << adapterIndex << "] " << adapterName << "\n";
-        
-        double vramMB = (double)adapterDesc.DedicatedVideoMemory / (1024 * 1024);
-        std::cout << "  VRAM: " << vramMB << " MB\n";
-
-        ComPtr<ID3D11Device> d3dDevice;
-        D3D_FEATURE_LEVEL featureLevel;
-        D3D_FEATURE_LEVEL featureTypes[] = { D3D_FEATURE_LEVEL_11_0 };
-        HRESULT hrD3D = D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, 
-                                          featureTypes, 1, D3D11_SDK_VERSION, 
-                                          &d3dDevice, &featureLevel, nullptr);
-        
-        if (FAILED(hrD3D)) {
-             std::cout << "  -> (Не удалось создать D3D11 Device на этом адаптере. Пропускаем экраны)\n\n";
-             adapterIndex++;
-             continue;
-        }
-
-        ComPtr<IDXGIOutput> output;
-        UINT outputIndex = 0;
-        bool adapterHasMonitors = false;
-
-        while (adapter->EnumOutputs(outputIndex, &output) != DXGI_ERROR_NOT_FOUND) {
-            adapterHasMonitors = true;
-            foundAnyMonitor = true;
-            
-            DXGI_OUTPUT_DESC desc;
-            output->GetDesc(&desc);
-
-            std::string outputName = WStringToString(desc.DeviceName);
-            int width = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
-            int height = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
-            
-            std::cout << "    [Monitor " << outputIndex << "] " << outputName << "\n";
-            std::cout << "      State:       " << (desc.AttachedToDesktop ? "Attached to Desktop (Active)" : "Disconnected") << "\n";
-            std::cout << "      Resolution:  " << width << "x" << height << "\n";
-
-            MONITORINFOEXW mi = { sizeof(mi) };
-            if (GetMonitorInfoW(desc.Monitor, &mi)) {
-                DISPLAY_DEVICEW dd = { sizeof(dd) };
-                if (EnumDisplayDevicesW(mi.szDevice, 0, &dd, 0)) {
-                    std::string deviceString = WStringToString(dd.DeviceString);
-                    std::cout << "      Driver Name: " << deviceString << "\n";
+        if (label == "video") {
+            videoChannel_ = dc;
+            videoChannel_->onMessage([this](std::variant<rtc::binary, std::string> data) {
+                if (std::holds_alternative<rtc::binary>(data) && videoCallback_) {
+                    const auto& bin = std::get<rtc::binary>(data);
+                    videoCallback_(reinterpret_cast<const uint8_t*>(bin.data()), bin.size());
                 }
-            }
-
-            if (desc.AttachedToDesktop) {
-                ComPtr<IDXGIOutput1> output1;
-                if (SUCCEEDED(output.As(&output1))) {
-                    ComPtr<IDXGIOutputDuplication> duplTest;
-                    HRESULT dupHr = output1->DuplicateOutput(d3dDevice.Get(), &duplTest);
-                    if (SUCCEEDED(dupHr)) {
-                        std::cout << "      Duplication: SUCCESS (Ready for capture)\n";
-                    } else {
-                        std::cout << "      Duplication: FAILED (HRESULT: 0x" << std::hex << dupHr << std::dec << ")\n";
-                        if (dupHr == 0x80070057) std::cout << "                   -> E_INVALIDARG (Usually RDP block or wrong GPU)\n";
-                        if (dupHr == 0x80070005) std::cout << "                   -> E_ACCESSDENIED (Screen locked or UAC prompt)\n";
+            });
+        } else if (label == "input") {
+            inputChannel_ = dc;
+        } else if (label == "audio") {
+            audioChannel_ = dc;
+            audioChannel_->onMessage([this](std::variant<rtc::binary, std::string> data) {
+                if (std::holds_alternative<rtc::binary>(data) && audioCallback_) {
+                    const auto& bin = std::get<rtc::binary>(data);
+                    audioCallback_(reinterpret_cast<const uint8_t*>(bin.data()), bin.size());
+                }
+            });
+        } else if (label == "cursor") {
+            cursorChannel_ = dc;
+            cursorChannel_->onMessage([this](std::variant<rtc::binary, std::string> data) {
+                if (std::holds_alternative<rtc::binary>(data)) {
+                    const auto& bin = std::get<rtc::binary>(data);
+                    if (bin.size() >= sizeof(MessageType)) {
+                        auto type = *reinterpret_cast<const MessageType*>(bin.data());
+                        if (type == MessageType::CursorPosition && bin.size() >= sizeof(CursorPositionMessage) && cursorPositionCallback_) {
+                            const auto* pos = reinterpret_cast<const CursorPositionMessage*>(bin.data());
+                            cursorPositionCallback_(*pos);
+                        } else if (type == MessageType::CursorShape && bin.size() >= sizeof(CursorShapeMessage) && cursorShapeCallback_) {
+                            const auto* shape = reinterpret_cast<const CursorShapeMessage*>(bin.data());
+                            const uint8_t* shapeData = reinterpret_cast<const uint8_t*>(bin.data()) + sizeof(CursorShapeMessage);
+                            cursorShapeCallback_(*shape, shapeData);
+                        }
                     }
                 }
+            });
+        } else if (label == "control") {
+            controlChannel_ = dc;
+            controlChannel_->onOpen([this]() {
+                RequestIDR();
+            });
+        }
+    });
+
+    pc_->onStateChange([this](rtc::PeerConnection::State state) {
+        std::cout << "[WebRTC Client] State: " << state << std::endl;
+        connected_ = (state == rtc::PeerConnection::State::Connected);
+        if (connected_) {
+            RequestIDR();
+        }
+    });
+
+    return true;
+}
+
+void WebRTCClient::Shutdown() noexcept {
+    connected_ = false;
+    hasRemoteDescription_ = false;
+    pendingCandidates_.clear();
+
+    if (videoChannel_) { videoChannel_->close(); videoChannel_.reset(); }
+    if (inputChannel_) { inputChannel_->close(); inputChannel_.reset(); }
+    if (audioChannel_) { audioChannel_->close(); audioChannel_.reset(); }
+    if (cursorChannel_) { cursorChannel_->close(); cursorChannel_.reset(); }
+    if (controlChannel_) { controlChannel_->close(); controlChannel_.reset(); }
+    if (pc_) { pc_->close(); pc_.reset(); }
+}
+
+void WebRTCClient::ProcessSignalingMessage(const std::string& msg) {
+    try {
+        auto data = json::parse(msg);
+        std::string type = data.value("type", "");
+
+        if (type == "offer") {
+            std::cout << "[WebRTC Client] Received Offer -> Setting Remote Description" << std::endl;
+            pc_->setRemoteDescription(rtc::Description(data["sdp"], type));
+            hasRemoteDescription_ = true;
+
+            for (const auto& [cand, mid] : pendingCandidates_) {
+                pc_->addRemoteCandidate(rtc::Candidate(cand, mid));
             }
-            std::cout << "\n";
-            outputIndex++;
+            pendingCandidates_.clear();
+        } else if (type == "ice_candidate") {
+            std::string cand = data["candidate"];
+            std::string mid = data["sdpMid"];
+
+            if (hasRemoteDescription_) {
+                pc_->addRemoteCandidate(rtc::Candidate(cand, mid));
+            } else {
+                pendingCandidates_.emplace_back(cand, mid);
+            }
         }
-        
-        if (!adapterHasMonitors) {
-            std::cout << "    -> No monitors attached.\n\n";
-        }
-
-        adapterIndex++;
+    } catch (const std::exception& e) {
+        std::cerr << "[WebRTC Client] Signaling Error: " << e.what() << std::endl;
     }
+}
 
-    if (!foundAnyMonitor) {
-        std::cout << "[-] Ни одного монитора не найдено в системе!\n";
+void WebRTCClient::SendInputData(const uint8_t* data, size_t size) {
+    if (inputChannel_ && inputChannel_->isOpen() && data && size > 0) {
+        rtc::binary payload(
+            reinterpret_cast<const std::byte*>(data),
+            reinterpret_cast<const std::byte*>(data + size)
+        );
+        inputChannel_->send(std::move(payload));
     }
+}
 
-    std::cout << "==========================================\n";
-    std::cout << "Press Enter to exit...\n";
-    std::cin.get();
-
-    return 0;
+void WebRTCClient::RequestIDR() {
+    if (controlChannel_ && controlChannel_->isOpen()) {
+        ControlCommandMessage msg;
+        msg.command = ControlCommandType::RequestIDR;
+        rtc::binary payload(
+            reinterpret_cast<const std::byte*>(&msg),
+            reinterpret_cast<const std::byte*>(&msg) + sizeof(ControlCommandMessage)
+        );
+        controlChannel_->send(std::move(payload));
+    }
 }
 ```
 
-17. *host/src/main.cpp*
+19. *client/src/renderer/d3d11_renderer.cpp*
 ```
+#include "renderer/d3d11_renderer.h"
 #include <iostream>
-#include <windows.h>
-#include <thread>
-#include <chrono>
-#include <rtc/rtc.hpp>
-#include <nlohmann/json.hpp>
-#include "DXGICapture.h"
-#include "NVENCEncoder.h"    
-#include "SignalingClient.h"
-#include "WebRTCManager.h"
 
-extern "C" {
-    __declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
-    __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+D3D11Renderer::D3D11Renderer() = default;
+
+D3D11Renderer::~D3D11Renderer() noexcept {
+    Shutdown();
 }
 
-using json = nlohmann::json;
+bool D3D11Renderer::Initialize(HWND hwnd, uint32_t width, uint32_t height) {
+    Shutdown();
+    hwnd_ = hwnd;
+    windowWidth_ = width;
+    windowHeight_ = height;
 
-int main() {
-    rtc::InitLogger(rtc::LogLevel::Verbose);
-    SetConsoleOutputCP(CP_UTF8);
-    rtc::InitLogger(rtc::LogLevel::Error); 
-    
-    std::cout << "=== Запуск Low-Latency Host Worker ===" << std::endl;
-
-    DXGICapture capturer;
-    if (!capturer.Init()) return -1;
-
-    NVENCEncoder encoder;
-    if (!encoder.Init(capturer.GetDevice(), capturer.GetWidth(), capturer.GetHeight())) {
-        std::cerr << "[-] Критическая ошибка: Не удалось запустить NVENC." << std::endl;
-        return -1;
-    }
-
-    WebRTCManager rtcManager;
-    if (!rtcManager.Init()) return -1;
-
-    SignalingClient signaling("ws://127.0.0.1:8080");
-
-    rtcManager.onLocalDescription = [&signaling](const std::string& msg) {
-        signaling.SendMsg(msg);
-    };
-    rtcManager.onLocalCandidate = [&signaling](const std::string& msg) {
-        signaling.SendMsg(msg);
-    };
-
-    signaling.onMessageReceived = [&rtcManager](const std::string& msg) {
-        try {
-            json data = json::parse(msg);
-            std::string type = data.value("type", "");
-            if (type == "offer") {
-                rtcManager.SetRemoteDescription(type, data["sdp"]);
-            }
-            else if (type == "ice_candidate") {
-                rtcManager.AddRemoteCandidate(data["candidate"], data["sdpMid"]);
-            }
-        } 
-        catch (const std::exception& e) {
-            std::cerr << "[-] Ошибка при обработке сообщения: " << e.what() << std::endl;
-        } 
-        catch (...) {
-            std::cerr << "[-] Критическая неизвестная ошибка в WebRTC!" << std::endl;
-        }
-    };
-
-    signaling.Connect();
-    std::cout << "[+] Ядро готово. Ожидание клиента..." << std::endl;
-    
-    while (true) {
-        ID3D11Texture2D* pTexture = capturer.AcquireFrame();
-        
-        if (pTexture) {
-            std::vector<uint8_t> encodedData = encoder.EncodeFrame(pTexture);
-            
-            pTexture->Release();
-
-            capturer.UnlockFrame();
-
-            if (!encodedData.empty()) {
-                rtcManager.SendVideoData(encodedData);
-            }
-        }
-    }
-
-    return 0;
-}
-```
-
-18. *host/src/NVENCEncoder.cpp*
-```
-#include "NVENCEncoder.h"
-#include <windows.h>
-
-NVENCEncoder::NVENCEncoder() : hInstNvEnc(nullptr), hEncoder(nullptr) {
-    memset(&nvenc, 0, sizeof(NV_ENCODE_API_FUNCTION_LIST));
-}
-
-NVENCEncoder::~NVENCEncoder() {
-    Destroy();
-}
-
-bool NVENCEncoder::LoadNvEncApi() {
-    hInstNvEnc = LoadLibrary(TEXT("nvEncodeAPI64.dll"));
-    if (!hInstNvEnc) {
-        std::cerr << "[-] NVENC: Ошибка загрузки nvEncodeAPI64.dll. Установлен ли драйвер NVIDIA?" << std::endl;
+    if (!CreateDeviceAndSwapChain(hwnd)) {
         return false;
     }
-
-    typedef NVENCSTATUS(NVENCAPI *NvEncodeAPICreateInstance_Type)(NV_ENCODE_API_FUNCTION_LIST*);
-    NvEncodeAPICreateInstance_Type NvEncodeAPICreateInstance = 
-        (NvEncodeAPICreateInstance_Type)GetProcAddress(hInstNvEnc, "NvEncodeAPICreateInstance");
-    
-    if (!NvEncodeAPICreateInstance) {
-        std::cerr << "[-] NVENC: Функция NvEncodeAPICreateInstance не найдена." << std::endl;
+    if (!CreateVideoProcessor()) {
         return false;
     }
-
-    nvenc.version = NV_ENCODE_API_FUNCTION_LIST_VER;
-    if (NvEncodeAPICreateInstance(&nvenc) != NV_ENC_SUCCESS) {
-        std::cerr << "[-] NVENC: Не удалось инициализировать NVENC API." << std::endl;
+    if (!CreateRenderTarget()) {
         return false;
     }
 
     return true;
 }
 
-bool NVENCEncoder::Init(ID3D11Device* d3dDevice, uint32_t width, uint32_t height) {
-    frameWidth = width;
-    frameHeight = height;
+void D3D11Renderer::Shutdown() noexcept {
+    CleanupRenderTarget();
+    outputView_.Reset();
+    videoProcessor_.Reset();
+    videoProcessorEnum_.Reset();
+    videoContext_.Reset();
+    videoDevice_.Reset();
+    swapChain_.Reset();
+    context_.Reset();
+    device_.Reset();
+}
 
-    if (!LoadNvEncApi()) return false;
+bool D3D11Renderer::CreateDeviceAndSwapChain(HWND hwnd) {
+    DXGI_SWAP_CHAIN_DESC scd = {};
+    scd.BufferCount = 2;
+    scd.BufferDesc.Width = windowWidth_;
+    scd.BufferDesc.Height = windowHeight_;
+    scd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    scd.BufferDesc.RefreshRate.Numerator = 0;
+    scd.BufferDesc.RefreshRate.Denominator = 1;
+    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scd.OutputWindow = hwnd;
+    scd.SampleDesc.Count = 1;
+    scd.SampleDesc.Quality = 0;
+    scd.Windowed = TRUE;
+    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 
-    NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS sessionParams = { NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER };
-    sessionParams.device = d3dDevice;
-    sessionParams.deviceType = NV_ENC_DEVICE_TYPE_DIRECTX;
-    sessionParams.apiVersion = NVENCAPI_VERSION;
+    UINT createFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
 
-    NVENCSTATUS status = nvenc.nvEncOpenEncodeSessionEx(&sessionParams, &hEncoder);
-    if (status != NV_ENC_SUCCESS) {
-        std::cerr << "[-] NVENC: Ошибка открытия сессии кодирования. Код: " << status << std::endl;
-        return false;
-    }
+    D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
+    D3D_FEATURE_LEVEL featureLevel;
 
-    NV_ENC_INITIALIZE_PARAMS initParams;
-    memset(&initParams, 0, sizeof(initParams));
-    initParams.version = NV_ENC_INITIALIZE_PARAMS_VER;
-    initParams.encodeGUID = NV_ENC_CODEC_H264_GUID;
-    initParams.presetGUID = NV_ENC_PRESET_P3_GUID;         
-    initParams.tuningInfo = NV_ENC_TUNING_INFO_LOW_LATENCY; 
-    
-    initParams.encodeWidth = frameWidth & ~1;   
-    initParams.encodeHeight = frameHeight & ~1;
-    initParams.darWidth = initParams.encodeWidth;
-    initParams.darHeight = initParams.encodeHeight;
-    
-    initParams.frameRateNum = 60;
-    initParams.frameRateDen = 1;
-    initParams.enableEncodeAsync = 0;
-    initParams.enablePTD = 1; 
+    HRESULT hr = D3D11CreateDeviceAndSwapChain(
+        nullptr,
+        D3D_DRIVER_TYPE_HARDWARE,
+        nullptr,
+        createFlags,
+        featureLevels,
+        ARRAYSIZE(featureLevels),
+        D3D11_SDK_VERSION,
+        &scd,
+        &swapChain_,
+        &device_,
+        &featureLevel,
+        &context_
+    );
 
-    NV_ENC_PRESET_CONFIG presetConfig;
-    memset(&presetConfig, 0, sizeof(presetConfig));
-    presetConfig.version = NV_ENC_PRESET_CONFIG_VER;
-    presetConfig.presetCfg.version = NV_ENC_CONFIG_VER;
-    
-    status = nvenc.nvEncGetEncodePresetConfigEx(hEncoder, initParams.encodeGUID, initParams.presetGUID, initParams.tuningInfo, &presetConfig);
-    if (status != NV_ENC_SUCCESS) {
-        std::cerr << "[-] NVENC: Ошибка получения пресета. Код: " << status << std::endl;
-        return false;
-    }
+    if (FAILED(hr)) return false;
 
-    presetConfig.presetCfg.gopLength = 60; 
-    presetConfig.presetCfg.frameIntervalP = 1;                    
-    
-    presetConfig.presetCfg.encodeCodecConfig.h264Config.idrPeriod = 60;
-    presetConfig.presetCfg.encodeCodecConfig.h264Config.repeatSPSPPS = 1; 
-
-    presetConfig.presetCfg.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
-    presetConfig.presetCfg.rcParams.averageBitRate = 15000000;   
-    presetConfig.presetCfg.rcParams.maxBitRate = 15000000;
-    presetConfig.presetCfg.rcParams.vbvBufferSize = 1500000;     
-    presetConfig.presetCfg.rcParams.vbvInitialDelay = 750000;
-
-    initParams.encodeConfig = &presetConfig.presetCfg;
-
-    status = nvenc.nvEncInitializeEncoder(hEncoder, &initParams);
-    if (status != NV_ENC_SUCCESS) {
-        std::cerr << "[-] NVENC: Ошибка инициализации H.264 ядра. Код: " << status << std::endl;
-        return false;
-    }
-
-    std::cout << "[+] NVENC: Аппаратный кодировщик NVIDIA успешно инициализирован!" << std::endl;
-
-    NV_ENC_CREATE_BITSTREAM_BUFFER bitstreamParams = { NV_ENC_CREATE_BITSTREAM_BUFFER_VER };
-    if (nvenc.nvEncCreateBitstreamBuffer(hEncoder, &bitstreamParams) == NV_ENC_SUCCESS) {
-        bitstreamBuffer = bitstreamParams.bitstreamBuffer;
-    } else {
-        std::cerr << "[-] NVENC: Ошибка выделения bitstream-буфера." << std::endl;
-        return false;
-    }
-
+    device_.As(&videoDevice_);
+    context_.As(&videoContext_);
     return true;
 }
 
-void NVENCEncoder::Destroy() {
-    if (hEncoder && nvenc.nvEncDestroyEncoder) {
-        nvenc.nvEncDestroyEncoder(hEncoder);
-        if (hEncoder && bitstreamBuffer) {
-        nvenc.nvEncDestroyBitstreamBuffer(hEncoder, bitstreamBuffer);
-        bitstreamBuffer = nullptr;
-    }
-        hEncoder = nullptr;
-    }
-    if (hInstNvEnc) {
-        FreeLibrary(hInstNvEnc);
-        hInstNvEnc = nullptr;
-    }
+bool D3D11Renderer::CreateVideoProcessor() {
+    if (!videoDevice_) return false;
+
+    videoProcessor_.Reset();
+    videoProcessorEnum_.Reset();
+
+    uint32_t inW = (videoWidth_ > 0) ? videoWidth_ : windowWidth_;
+    uint32_t inH = (videoHeight_ > 0) ? videoHeight_ : windowHeight_;
+
+    D3D11_VIDEO_PROCESSOR_CONTENT_DESC desc = {};
+    desc.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+    desc.InputWidth = inW;
+    desc.InputHeight = inH;
+    desc.OutputWidth = windowWidth_;
+    desc.OutputHeight = windowHeight_;
+    desc.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+
+    HRESULT hr = videoDevice_->CreateVideoProcessorEnumerator(&desc, &videoProcessorEnum_);
+    if (FAILED(hr)) return false;
+
+    hr = videoDevice_->CreateVideoProcessor(videoProcessorEnum_.Get(), 0, &videoProcessor_);
+    return SUCCEEDED(hr);
 }
 
-std::vector<uint8_t> NVENCEncoder::EncodeFrame(ID3D11Texture2D* pTexture) {
-    std::vector<uint8_t> packetData;
-    if (!hEncoder || !pTexture) return packetData;
+bool D3D11Renderer::CreateRenderTarget() {
+    ComPtr<ID3D11Texture2D> backBuffer;
+    HRESULT hr = swapChain_->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
+    if (FAILED(hr)) return false;
 
-    memset(&registeredResource, 0, sizeof(registeredResource));
-    registeredResource.version = NV_ENC_REGISTER_RESOURCE_VER;
-    registeredResource.resourceType = NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX;
-    registeredResource.resourceToRegister = (void*)pTexture;
-    registeredResource.width = frameWidth;
-    registeredResource.height = frameHeight;
-    registeredResource.pitch = 0; 
-    registeredResource.bufferFormat = NV_ENC_BUFFER_FORMAT_ARGB; 
-    
-    if (nvenc.nvEncRegisterResource(hEncoder, &registeredResource) != NV_ENC_SUCCESS) {
-        return packetData; 
+    hr = device_->CreateRenderTargetView(backBuffer.Get(), nullptr, &renderTargetView_);
+    if (FAILED(hr)) return false;
+
+    if (videoDevice_ && videoProcessorEnum_) {
+        D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ovd = {};
+        ovd.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+        hr = videoDevice_->CreateVideoProcessorOutputView(backBuffer.Get(), videoProcessorEnum_.Get(), &ovd, &outputView_);
     }
 
-    NV_ENC_MAP_INPUT_RESOURCE mapInputParams = { NV_ENC_MAP_INPUT_RESOURCE_VER };
-    mapInputParams.registeredResource = registeredResource.registeredResource;
-    nvenc.nvEncMapInputResource(hEncoder, &mapInputParams);
+    return SUCCEEDED(hr);
+}
 
-    NV_ENC_CREATE_BITSTREAM_BUFFER bitstreamParams = { NV_ENC_CREATE_BITSTREAM_BUFFER_VER };
-    if (nvenc.nvEncCreateBitstreamBuffer(hEncoder, &bitstreamParams) == NV_ENC_SUCCESS) {
-        bitstreamBuffer = bitstreamParams.bitstreamBuffer;
+void D3D11Renderer::CleanupRenderTarget() {
+    outputView_.Reset();
+    renderTargetView_.Reset();
+}
 
-        NV_ENC_PIC_PARAMS picParams = { NV_ENC_PIC_PARAMS_VER };
-        picParams.inputWidth = frameWidth;
-        picParams.inputHeight = frameHeight;
-        picParams.inputPitch = 0;
-        picParams.inputBuffer = mapInputParams.mappedResource;
-        picParams.outputBitstream = bitstreamBuffer;
-        picParams.bufferFmt = NV_ENC_BUFFER_FORMAT_ARGB;
-        picParams.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
+void D3D11Renderer::Resize(uint32_t width, uint32_t height) {
+    if (width == 0 || height == 0 || (width == windowWidth_ && height == windowHeight_)) return;
 
-        NVENCSTATUS status = nvenc.nvEncEncodePicture(hEncoder, &picParams);
+    windowWidth_ = width;
+    windowHeight_ = height;
 
-        if (status == NV_ENC_SUCCESS) {
-            NV_ENC_LOCK_BITSTREAM lockBitstream = { NV_ENC_LOCK_BITSTREAM_VER };
-            lockBitstream.outputBitstream = bitstreamBuffer;
-            if (nvenc.nvEncLockBitstream(hEncoder, &lockBitstream) == NV_ENC_SUCCESS) {
-                
-                uint8_t* pData = (uint8_t*)lockBitstream.bitstreamBufferPtr;
-                packetData.assign(pData, pData + lockBitstream.bitstreamSizeInBytes);
-                
-                nvenc.nvEncUnlockBitstream(hEncoder, lockBitstream.outputBitstream);
-            }
+    CleanupRenderTarget();
+    videoProcessor_.Reset();
+    videoProcessorEnum_.Reset();
+
+    swapChain_->ResizeBuffers(0, windowWidth_, windowHeight_, DXGI_FORMAT_UNKNOWN, 0);
+
+    CreateVideoProcessor();
+    CreateRenderTarget();
+}
+
+void D3D11Renderer::RenderFrame(const DecodedFrame& frame) {
+    if (!frame.texture || !swapChain_) return;
+
+    if (frame.width > 0 && frame.height > 0 && (frame.width != videoWidth_ || frame.height != videoHeight_)) {
+        videoWidth_ = frame.width;
+        videoHeight_ = frame.height;
+        CleanupRenderTarget();
+        CreateVideoProcessor();
+        CreateRenderTarget();
+    }
+
+    if (videoContext_ && videoProcessor_ && outputView_ && videoProcessorEnum_) {
+        D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd = {};
+        ivd.FourCC = 0;
+        ivd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+        ivd.Texture2D.ArraySlice = frame.subresourceIndex;
+
+        ComPtr<ID3D11VideoProcessorInputView> inputView;
+        HRESULT hr = videoDevice_->CreateVideoProcessorInputView(frame.texture, videoProcessorEnum_.Get(), &ivd, &inputView);
+
+        if (SUCCEEDED(hr)) {
+            D3D11_VIDEO_PROCESSOR_STREAM stream = {};
+            stream.Enable = TRUE;
+            stream.pInputSurface = inputView.Get();
+
+            RECT srcRect = { 0, 0, static_cast<LONG>(frame.width), static_cast<LONG>(frame.height) };
+            RECT dstRect = { 0, 0, static_cast<LONG>(windowWidth_), static_cast<LONG>(windowHeight_) };
+
+            videoContext_->VideoProcessorSetStreamSourceRect(videoProcessor_.Get(), 0, TRUE, &srcRect);
+            videoContext_->VideoProcessorSetStreamDestRect(videoProcessor_.Get(), 0, TRUE, &dstRect);
+
+            videoContext_->VideoProcessorBlt(videoProcessor_.Get(), outputView_.Get(), 0, 1, &stream);
         }
     }
 
-    nvenc.nvEncUnmapInputResource(hEncoder, mapInputParams.mappedResource);
-    nvenc.nvEncUnregisterResource(hEncoder, registeredResource.registeredResource);
-
-    return packetData;
+    swapChain_->Present(0, 0);
 }
 ```
 
-19. *host/src/NVENCEncoder.h*
+20. *common/CMakeLists.txt*
+```
+add_library(eidolon_common INTERFACE)
+
+target_include_directories(eidolon_common INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(eidolon_common INTERFACE
+    avrt.lib
+)
+```
+
+21. *common/include/mmcss.h*
 ```
 #pragma once
-#include <d3d11.h>
-#include <wrl/client.h>
-#include "nvenc/nvEncodeAPI.h"
-#include <iostream>
-#include <vector>
 
-class NVENCEncoder {
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601
+#endif
+
+#include <windows.h>
+#include <avrt.h>
+
+#pragma comment(lib, "avrt.lib")
+
+class MMCSSScopedTask {
 public:
-    NVENCEncoder();
-    ~NVENCEncoder();
+    explicit MMCSSScopedTask(const wchar_t* taskName) {
+        taskIndex_ = 0;
+        handle_ = AvSetMmThreadCharacteristicsW(const_cast<LPWSTR>(taskName), &taskIndex_);
+    }
 
-    bool Init(ID3D11Device* d3dDevice, uint32_t width, uint32_t height);
-    
-    std::vector<uint8_t> EncodeFrame(ID3D11Texture2D* pTexture);
-    
-    void Destroy();
+    ~MMCSSScopedTask() {
+        if (handle_) {
+            AvRevertMmThreadCharacteristics(handle_);
+        }
+    }
+
+    MMCSSScopedTask(const MMCSSScopedTask&) = delete;
+    MMCSSScopedTask& operator=(const MMCSSScopedTask&) = delete;
+
+    bool IsValid() const { return handle_ != nullptr; }
 
 private:
-    HMODULE hInstNvEnc;
-    NV_ENCODE_API_FUNCTION_LIST nvenc;
-    void* hEncoder;
-
-    uint32_t frameWidth;
-    uint32_t frameHeight;
-
-    NV_ENC_REGISTER_RESOURCE registeredResource;
-    NV_ENC_OUTPUT_PTR bitstreamBuffer;
-
-    bool LoadNvEncApi();
+    HANDLE handle_{nullptr};
+    DWORD taskIndex_{0};
 };
 ```
 
-20. *host/src/SignalingClient.cpp*
-```
-#include "SignalingClient.h"
-
-SignalingClient::SignalingClient(const std::string& url) : serverUrl(url) {
-    ws = std::make_shared<rtc::WebSocket>();
-
-    ws->onOpen([this]() {
-        std::cout << "[Сигналинг] Соединение установлено!" << std::endl;
-        json regMsg = {{"type", "register"}, {"role", "host"}};
-        ws->send(regMsg.dump());
-    });
-
-    ws->onMessage([this](std::variant<rtc::binary, std::string> data) {
-        if (std::holds_alternative<std::string>(data)) {
-            std::string msg = std::get<std::string>(data);
-            std::cout << "[Сигналинг] Входящее сообщение: " << msg << std::endl;
-            
-            if (onMessageReceived) {
-                onMessageReceived(msg);
-            }
-        }
-    });
-
-    ws->onClosed([]() { std::cout << "[Сигналинг] Соединение закрыто." << std::endl; });
-    ws->onError([](const std::string& error) { std::cerr << "[-] Ошибка WebSocket: " << error << std::endl; });
-}
-
-SignalingClient::~SignalingClient() { Stop(); }
-
-void SignalingClient::Connect() { ws->open(serverUrl); }
-void SignalingClient::Stop() { if (ws) ws->close(); }
-
-void SignalingClient::SendMsg(const std::string& message) { 
-    if (ws && ws->isOpen()) {
-        ws->send(message);
-    }
-}
-```
-
-21. *host/src/SignalingClient.h*
+22. *common/include/protocol.h*
 ```
 #pragma once
+
+#include <cstdint>
+
+#pragma pack(push, 1)
+
+enum class MessageType : uint8_t {
+    InputMouseRelative = 1,
+    InputMouseButton = 2,
+    InputMouseWheel = 3,
+    InputKeyboard = 4,
+    CursorPosition = 5,
+    CursorShape = 6,
+    ControlCommand = 7,
+    InputMouseAbsolute = 8
+};
+
+struct MouseRelativeMessage {
+    MessageType type{MessageType::InputMouseRelative};
+    int32_t deltaX{0};
+    int32_t deltaY{0};
+};
+
+struct MouseAbsoluteMessage {
+    MessageType type{MessageType::InputMouseAbsolute};
+    uint16_t x{0}; // 0 .. 65535
+    uint16_t y{0}; // 0 .. 65535
+};
+
+struct MouseButtonMessage {
+    MessageType type{MessageType::InputMouseButton};
+    uint8_t button{0};
+    uint8_t pressed{0};
+};
+
+struct MouseWheelMessage {
+    MessageType type{MessageType::InputMouseWheel};
+    int32_t deltaX{0};
+    int32_t deltaY{0};
+};
+
+struct KeyboardMessage {
+    MessageType type{MessageType::InputKeyboard};
+    uint16_t vkCode{0};
+    uint8_t pressed{0};
+};
+
+struct CursorPositionMessage {
+    MessageType type{MessageType::CursorPosition};
+    int32_t x{0};
+    int32_t y{0};
+    uint8_t visible{1};
+};
+
+struct CursorShapeMessage {
+    MessageType type{MessageType::CursorShape};
+    uint32_t width{0};
+    uint32_t height{0};
+    int32_t hotspotX{0};
+    int32_t hotspotY{0};
+    uint32_t dataSize{0};
+};
+
+enum class ControlCommandType : uint8_t {
+    RequestIDR = 1,
+    KeepAlive = 2
+};
+
+struct ControlCommandMessage {
+    MessageType type{MessageType::ControlCommand};
+    ControlCommandType command{ControlCommandType::RequestIDR};
+};
+
+#pragma pack(pop)
+```
+
+23. *common/include/spsc_queue.h*
+```
+#pragma once
+
+#include <atomic>
+#include <vector>
+#include <optional>
+#include <cstddef>
+
+template <typename T, size_t Capacity>
+class SPSCQueue {
+public:
+    SPSCQueue() : head_(0), tail_(0) {
+        buffer_.resize(Capacity + 1);
+    }
+
+    ~SPSCQueue() = default;
+
+    SPSCQueue(const SPSCQueue&) = delete;
+    SPSCQueue& operator=(const SPSCQueue&) = delete;
+
+    bool Push(const T& item) {
+        const size_t currentTail = tail_.load(std::memory_order_relaxed);
+        const size_t currentHead = head_.load(std::memory_order_acquire);
+
+        size_t nextTail = (currentTail + 1) % buffer_.size();
+        if (nextTail == currentHead) {
+            return false; 
+        }
+
+        buffer_[currentTail] = item;
+        tail_.store(nextTail, std::memory_order_release);
+        return true;
+    }
+
+    bool Push(T&& item) {
+        const size_t currentTail = tail_.load(std::memory_order_relaxed);
+        const size_t currentHead = head_.load(std::memory_order_acquire);
+
+        size_t nextTail = (currentTail + 1) % buffer_.size();
+        if (nextTail == currentHead) {
+            return false;
+        }
+
+        buffer_[currentTail] = std::move(item);
+        tail_.store(nextTail, std::memory_order_release);
+        return true;
+    }
+
+    bool Pop(T& item) {
+        const size_t currentHead = head_.load(std::memory_order_relaxed);
+        const size_t currentTail = tail_.load(std::memory_order_acquire);
+
+        if (currentHead == currentTail) {
+            return false; 
+        }
+
+        item = std::move(buffer_[currentHead]);
+        head_.store((currentHead + 1) % buffer_.size(), std::memory_order_release);
+        return true;
+    }
+
+    bool Empty() const {
+        return head_.load(std::memory_order_relaxed) == tail_.load(std::memory_order_relaxed);
+    }
+
+private:
+    std::vector<T> buffer_;
+    alignas(64) std::atomic<size_t> head_;
+    alignas(64) std::atomic<size_t> tail_;
+};
+```
+
+24. *host/CMakeLists.txt*
+```
+find_package(LibDataChannel CONFIG REQUIRED)
+find_package(Opus CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
+
+add_executable(eidolon_host
+    src/main.cpp
+    src/capture/dxgi_capturer.cpp
+    src/color_converter/d3d11_video_processor.cpp
+    src/encoder/nvenc_encoder.cpp
+    src/audio/wasapi_opus_capturer.cpp
+    src/input/windows_input_injector.cpp
+    src/network/signaling_client.cpp
+    src/network/webrtc_streamer.cpp
+)
+
+target_include_directories(eidolon_host PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/nvenc/include
+)
+
+target_link_libraries(eidolon_host PRIVATE
+    eidolon_common
+    LibDataChannel::LibDataChannel
+    Opus::opus
+    nlohmann_json::nlohmann_json
+    d3d11.lib
+    dxgi.lib
+    dxguid.lib
+    mfplat.lib
+    mfuuid.lib
+    mmdevapi.lib
+    avrt.lib
+    user32.lib
+)
+```
+
+25. *host/include/audio/audio_capturer.h*
+```
+#pragma once
+
+#include <cstdint>
+#include <functional>
+
+class IAudioCapturer {
+public:
+    virtual ~IAudioCapturer() noexcept = default;
+
+    virtual bool Initialize() = 0;
+    virtual void Shutdown() noexcept = 0;
+
+    virtual bool Start() = 0;
+    virtual void Stop() noexcept = 0;
+
+    virtual void SetEncodedAudioCallback(std::function<void(const uint8_t* data, size_t size)> callback) = 0;
+};
+```
+
+26. *host/include/audio/wasapi_opus_capturer.h*
+```
+#pragma once
+
+#include <audioclient.h>
+#include <mmdeviceapi.h>
+#include <opus/opus.h>
+#include <wrl/client.h>
+#include <atomic>
+#include <cstdint>
+#include <functional>
+#include <thread>
+
+using Microsoft::WRL::ComPtr;
+
+class WasapiOpusCapturer {
+public:
+    WasapiOpusCapturer();
+    ~WasapiOpusCapturer() noexcept;
+
+    bool Initialize();
+    void Shutdown() noexcept;
+
+    bool Start();
+    void Stop() noexcept;
+
+    void SetEncodedAudioCallback(std::function<void(const uint8_t*, size_t)> callback) {
+        encodedAudioCallback_ = std::move(callback);
+    }
+
+private:
+    ComPtr<IAudioClient> audioClient_;
+    ComPtr<IAudioCaptureClient> captureClient_;
+    OpusEncoder* opusEncoder_{nullptr};
+
+    uint32_t channels_{2};
+    uint32_t sampleRate_{48000};
+
+    std::atomic<bool> running_{false};
+    std::thread captureThread_;
+    std::function<void(const uint8_t*, size_t)> encodedAudioCallback_;
+};
+```
+
+27. *host/include/capture/dxgi_capturer.h*
+```
+#pragma once
+
+#include "protocol.h"
+#include <d3d11.h>
+#include <dxgi1_2.h>
+#include <wrl/client.h>
+#include <functional>
+#include <vector>
+#include <cstdint>
+
+using Microsoft::WRL::ComPtr;
+
+enum class CaptureStatus {
+    Success,
+    Timeout,
+    AccessLost,
+    Error
+};
+
+class DXGICapturer {
+public:
+    DXGICapturer();
+    ~DXGICapturer() noexcept;
+
+    bool Initialize();
+    void Shutdown() noexcept;
+
+    CaptureStatus AcquireFrame(ID3D11Texture2D** outTexture, uint32_t timeoutMs = 16);
+    void ReleaseFrame();
+
+    void ResendCursorState();
+
+    void SetCursorShapeCallback(std::function<void(const CursorShapeMessage&, const uint8_t*)> callback) {
+        cursorShapeCallback_ = std::move(callback);
+    }
+    void SetCursorPositionCallback(std::function<void(const CursorPositionMessage&)> callback) {
+        cursorPositionCallback_ = std::move(callback);
+    }
+
+    uint32_t GetWidth() const { return width_; }
+    uint32_t GetHeight() const { return height_; }
+    ID3D11Device* GetDevice() const { return device_.Get(); }
+    ID3D11DeviceContext* GetContext() const { return context_.Get(); }
+
+private:
+    void ProcessCursor(const DXGI_OUTDUPL_FRAME_INFO& frameInfo);
+
+    ComPtr<ID3D11Device> device_;
+    ComPtr<ID3D11DeviceContext> context_;
+    ComPtr<IDXGIOutputDuplication> duplication_;
+    ComPtr<ID3D11Texture2D> currentFrameTexture_;
+
+    uint32_t width_{0};
+    uint32_t height_{0};
+    bool frameAcquired_{false};
+
+    std::vector<uint8_t> shapeBuffer_;
+    std::vector<uint8_t> convertedShapeBuffer_;
+
+    CursorShapeMessage cachedShape_{};
+    std::vector<uint8_t> cachedShapeData_;
+    CursorPositionMessage cachedPos_{};
+    bool hasCachedShape_{false};
+    bool hasCachedPos_{false};
+
+    std::function<void(const CursorShapeMessage&, const uint8_t*)> cursorShapeCallback_;
+    std::function<void(const CursorPositionMessage&)> cursorPositionCallback_;
+};
+```
+
+28. *host/include/capture/frame_capturer.h*
+```
+#pragma once
+
+#include <d3d11.h>
+#include <cstdint>
+#include <functional>
+#include "protocol.h"
+
+enum class CaptureStatus {
+    Success,
+    Timeout,
+    AccessLost,
+    Error
+};
+
+class IFrameCapturer {
+public:
+    virtual ~IFrameCapturer() = default;
+
+    virtual bool Initialize() = 0;
+    virtual void Shutdown() = 0;
+    
+    virtual CaptureStatus AcquireFrame(ID3D11Texture2D** ppTexture, uint32_t timeoutMs) = 0;
+    virtual void ReleaseFrame() = 0;
+
+    virtual ID3D11Device* GetDevice() const = 0;
+    virtual ID3D11DeviceContext* GetContext() const = 0;
+    virtual uint32_t GetWidth() const = 0;
+    virtual uint32_t GetHeight() const = 0;
+
+    virtual void SetCursorShapeCallback(std::function<void(const CursorShapeMessage&, const uint8_t*)> callback) = 0;
+    virtual void SetCursorPositionCallback(std::function<void(const CursorPositionMessage&)> callback) = 0;
+};
+```
+
+29. *host/include/color_converter/color_converter.h*
+```
+#pragma once
+
+#include <d3d11.h>
+#include <cstdint>
+
+class IColorConverter {
+public:
+    virtual ~IColorConverter() = default;
+
+    virtual bool Initialize(ID3D11Device* device, ID3D11DeviceContext* context, uint32_t width, uint32_t height) = 0;
+    virtual void Shutdown() = 0;
+
+    virtual bool Convert(ID3D11Texture2D* pInputTexture, ID3D11Texture2D** ppOutputTexture) = 0;
+
+    virtual uint32_t GetWidth() const = 0;
+    virtual uint32_t GetHeight() const = 0;
+};
+```
+
+30. *host/include/color_converter/d3d11_video_processor.h*
+```
+#pragma once
+
+#include "color_converter/color_converter.h"
+#include <d3d11_1.h>
+#include <wrl/client.h>
+
+using Microsoft::WRL::ComPtr;
+
+class D3D11VideoProcessorConverter final : public IColorConverter {
+public:
+    D3D11VideoProcessorConverter();
+    ~D3D11VideoProcessorConverter() override;
+
+    bool Initialize(ID3D11Device* device, ID3D11DeviceContext* context, uint32_t width, uint32_t height) override;
+    void Shutdown() override;
+
+    bool Convert(ID3D11Texture2D* pInputTexture, ID3D11Texture2D** ppOutputTexture) override;
+
+    uint32_t GetWidth() const override { return width_; }
+    uint32_t GetHeight() const override { return height_; }
+
+private:
+    bool CreateOutputResources();
+    bool InitializeVideoPipeline();
+
+    ComPtr<ID3D11Device> device_;
+    ComPtr<ID3D11DeviceContext> context_;
+    ComPtr<ID3D11VideoDevice> videoDevice_;
+    ComPtr<ID3D11VideoContext> videoContext_;
+    ComPtr<ID3D11VideoProcessorEnumerator> videoProcessorEnumerator_;
+    ComPtr<ID3D11VideoProcessor> videoProcessor_;
+
+    ComPtr<ID3D11Texture2D> outputTextureNV12_;
+    ComPtr<ID3D11VideoProcessorOutputView> outputView_;
+    
+    uint32_t width_{0};
+    uint32_t height_{0};
+};
+```
+
+31. *host/include/encoder/nvenc_encoder.h*
+```
+#pragma once
+
+#include "encoder/video_encoder.h"
+#include "nvEncodeAPI.h"
+#include <d3d11.h>
+#include <wrl/client.h>
+#include <memory>
+#include <array>
+
+using Microsoft::WRL::ComPtr;
+
+class NVENCEncoder final : public IVideoEncoder {
+public:
+    NVENCEncoder();
+    ~NVENCEncoder() noexcept override;
+
+    bool Initialize(ID3D11Device* device, const EncoderConfig& config) override;
+    void Shutdown() noexcept override;
+
+    bool EncodeFrame(ID3D11Texture2D* texture, bool forceIDR) override;
+    void SetEncodedFrameCallback(std::function<void(const uint8_t*, size_t)> callback) override {
+        encodedCallback_ = std::move(callback);
+    }
+
+    uint32_t GetWidth() const override { return config_.width; }
+    uint32_t GetHeight() const override { return config_.height; }
+
+private:
+    static constexpr int kSlotCount = 4;
+
+    struct ResourceSlot {
+        NV_ENC_REGISTERED_PTR registeredResource{nullptr};
+        NV_ENC_INPUT_PTR mappedResource{nullptr};
+        NV_ENC_OUTPUT_PTR bitstreamBuffer{nullptr};
+    };
+
+    HMODULE nvencModule_{nullptr};
+    std::unique_ptr<NV_ENCODE_API_FUNCTION_LIST> nvApi_;
+    void* encoder_{nullptr};
+
+    ComPtr<ID3D11Device> device_;
+    EncoderConfig config_{};
+    uint64_t frameIndex_{0};
+
+    std::array<ResourceSlot, kSlotCount> slots_{};
+    int currentSlot_{0};
+
+    std::function<void(const uint8_t*, size_t)> encodedCallback_;
+};
+```
+
+32. *host/include/encoder/video_encoder.h*
+```
+#pragma once
+
+#include <d3d11.h>
+#include <cstdint>
+#include <functional>
+
+struct EncoderConfig {
+    uint32_t width{1920};
+    uint32_t height{1080};
+    uint32_t frameRateNum{60};
+    uint32_t frameRateDen{1};
+    uint32_t bitRate{15'000'000};
+    uint32_t maxBitRate{15'000'000};
+    uint32_t vbvBufferSize{1'500'000};
+    uint32_t gopLength{60};
+    bool enableIntraRefresh{true};
+    uint32_t intraRefreshPeriod{60};
+    uint32_t intraRefreshDuration{10};
+};
+
+class IVideoEncoder {
+public:
+    virtual ~IVideoEncoder() noexcept = default;
+
+    virtual bool Initialize(ID3D11Device* device, const EncoderConfig& config) = 0;
+    virtual void Shutdown() noexcept = 0;
+
+    virtual bool EncodeFrame(ID3D11Texture2D* pTexture, bool forceIDR) = 0;
+    virtual void SetEncodedFrameCallback(std::function<void(const uint8_t* data, size_t size)> callback) = 0;
+
+    virtual uint32_t GetWidth() const = 0;
+    virtual uint32_t GetHeight() const = 0;
+};
+```
+
+33. *host/include/input/input_injector.h*
+```
+#pragma once
+
+#include <cstdint>
+
+class IInputInjector {
+public:
+    virtual ~IInputInjector() noexcept = default;
+
+    virtual bool Initialize() = 0;
+    virtual void InjectMouseRelative(int32_t deltaX, int32_t deltaY) = 0;
+    virtual void InjectMouseAbsolute(uint16_t x, uint16_t y) = 0;
+    virtual void InjectMouseButton(uint8_t button, bool pressed) = 0;
+    virtual void InjectMouseWheel(int32_t deltaX, int32_t deltaY) = 0;
+    virtual void InjectKeyboard(uint16_t vkCode, bool pressed) = 0;
+};
+```
+
+34. *host/include/input/windows_input_injector.h*
+```
+#pragma once
+
+#include "input/input_injector.h"
+#include <windows.h>
+
+class WindowsInputInjector final : public IInputInjector {
+public:
+    WindowsInputInjector();
+    ~WindowsInputInjector() noexcept override;
+
+    bool Initialize() override;
+    void InjectMouseRelative(int32_t deltaX, int32_t deltaY) override;
+    void InjectMouseAbsolute(uint16_t x, uint16_t y) override;
+    void InjectMouseButton(uint8_t button, bool pressed) override;
+    void InjectMouseWheel(int32_t deltaX, int32_t deltaY) override;
+    void InjectKeyboard(uint16_t vkCode, bool pressed) override;
+};
+```
+
+35. *host/include/network/signaling_client.h*
+```
+#pragma once
+
 #include <rtc/rtc.hpp>
 #include <nlohmann/json.hpp>
 #include <string>
-#include <iostream>
 #include <memory>
-#include <functional> 
+#include <functional>
 
 using json = nlohmann::json;
 
 class SignalingClient {
 public:
-    SignalingClient(const std::string& url);
-    ~SignalingClient();
+    explicit SignalingClient(std::string url);
+    ~SignalingClient() noexcept;
 
     void Connect();
-    void Stop();
-    
-    void SendMsg(const std::string& message);
+    void Disconnect() noexcept;
+    void SendText(const std::string& message);
 
-    std::function<void(const std::string&)> onMessageReceived;
+    void SetOnMessageCallback(std::function<void(const std::string&)> callback) {
+        onMessageReceived_ = std::move(callback);
+    }
+
+    void SetOnStateChangeCallback(std::function<void(bool connected)> callback) {
+        onStateChange_ = std::move(callback);
+    }
 
 private:
-    std::string serverUrl;
-    std::shared_ptr<rtc::WebSocket> ws;
+    std::string serverUrl_;
+    std::shared_ptr<rtc::WebSocket> ws_;
+    std::function<void(const std::string&)> onMessageReceived_;
+    std::function<void(bool)> onStateChange_;
 };
 ```
 
-22. *host/src/WebRTCManager.cpp*
+36. *host/include/network/webrtc_streamer.h*
 ```
-#include "WebRTCManager.h"
-#include <nlohmann/json.hpp>
-#include <rtc/rtppacketizationconfig.hpp>
-#include <rtc/rtppacketizer.hpp>
-#include <rtc/h264rtppacketizer.hpp>
+#pragma once
 
-using json = nlohmann::json;
+#include "protocol.h"
+#include <rtc/rtc.hpp>
+#include <memory>
+#include <functional>
+#include <atomic>
+#include <vector>
+#include <string>
+#include <utility>
 
-WebRTCManager::WebRTCManager() {}
-WebRTCManager::~WebRTCManager() {}
+class WebRTCStreamer {
+public:
+    WebRTCStreamer();
+    ~WebRTCStreamer() noexcept;
 
-bool WebRTCManager::Init() {
-    rtc::Configuration config;
-    config.iceServers.emplace_back("stun:stun.l.google.com:19302"); 
-    config.enableIceTcp = false;
+    bool Initialize();
+    void Shutdown() noexcept;
+
+    void StartSession();
+    void ProcessSignalingMessage(const std::string& msg);
     
-    pc = std::make_shared<rtc::PeerConnection>(config);
+    void SendVideoFrame(const uint8_t* data, size_t size);
+    void SendAudioFrame(const uint8_t* data, size_t size);
+    void SendCursorShape(const CursorShapeMessage& shape, const uint8_t* data);
+    void SendCursorPosition(const CursorPositionMessage& pos);
 
-    rtc::Description::Video media("video", rtc::Description::Direction::SendOnly);
-    media.addH264Codec(96); 
-    media.addSSRC(7777, "video-stream"); 
-    
-    auto track = pc->addTrack(media);
+    void SetSignalingSender(std::function<void(const std::string&)> callback) {
+        signalingSend_ = std::move(callback);
+    }
+    void SetInputCallback(std::function<void(const uint8_t* data, size_t size)> callback) {
+        inputCallback_ = std::move(callback);
+    }
+    void SetControlCallback(std::function<void(ControlCommandType)> callback) {
+        controlCallback_ = std::move(callback);
+    }
 
-    auto rtpConfig = std::make_shared<rtc::RtpPacketizationConfig>(7777, "video", 96, 90000);
-    auto packetizer = std::make_shared<rtc::H264RtpPacketizer>(rtc::H264RtpPacketizer::Separator::LongStartSequence, rtpConfig);
-    
-    track->setMediaHandler(packetizer);
-    
-    videoTrack.store(track);
+    bool IsPeerConnected() const { return peerConnected_; }
 
-    pc->onStateChange([](rtc::PeerConnection::State state) {
-        std::cout << "[WebRTC] Состояние соединения изменилось: " << state << std::endl;
+private:
+    void CreatePeerConnection();
+    void SetupDataChannels();
+
+    std::shared_ptr<rtc::PeerConnection> pc_;
+    
+    std::shared_ptr<rtc::DataChannel> videoChannel_;
+    std::shared_ptr<rtc::DataChannel> inputChannel_;
+    std::shared_ptr<rtc::DataChannel> audioChannel_;
+    std::shared_ptr<rtc::DataChannel> cursorChannel_;
+    std::shared_ptr<rtc::DataChannel> controlChannel_;
+
+    std::vector<uint8_t> cursorPayloadBuffer_;
+    std::atomic<bool> peerConnected_{false};
+    bool hasRemoteDescription_{false};
+    std::vector<std::pair<std::string, std::string>> pendingCandidates_;
+
+    std::function<void(const std::string&)> signalingSend_;
+    std::function<void(const uint8_t* data, size_t size)> inputCallback_;
+    std::function<void(ControlCommandType)> controlCallback_;
+};
+```
+
+37. *host/src/main.cpp*
+```
+#include "protocol.h"
+#include "mmcss.h"
+#include "capture/dxgi_capturer.h"
+#include "color_converter/d3d11_video_processor.h"
+#include "encoder/nvenc_encoder.h"
+#include "audio/wasapi_opus_capturer.h"
+#include "input/windows_input_injector.h"
+#include "network/signaling_client.h"
+#include "network/webrtc_streamer.h"
+#include <rtc/rtc.hpp>
+#include <iostream>
+#include <thread>
+#include <atomic>
+#include <chrono>
+#include <windows.h>
+
+int main() {
+    rtc::InitLogger(rtc::LogLevel::Warning);
+
+    SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+
+    MMCSSScopedTask mmcss(L"Games");
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
+    std::cout << "[Host] Initializing DXGI Capturer..." << std::endl;
+    DXGICapturer capturer;
+    if (!capturer.Initialize()) {
+        std::cerr << "[Host ERROR] Capturer failed!" << std::endl;
+        return -1;
+    }
+    std::cout << "[Host] Capturer OK: " << capturer.GetWidth() << "x" << capturer.GetHeight() << std::endl;
+
+    D3D11VideoProcessorConverter converter;
+    if (!converter.Initialize(capturer.GetDevice(), capturer.GetContext(), capturer.GetWidth(), capturer.GetHeight())) {
+        std::cerr << "[Host ERROR] Converter failed!" << std::endl;
+        return -1;
+    }
+
+    EncoderConfig encConfig;
+    encConfig.width = capturer.GetWidth();
+    encConfig.height = capturer.GetHeight();
+    encConfig.frameRateNum = 60;
+    encConfig.frameRateDen = 1;
+    encConfig.bitRate = 20'000'000;
+    encConfig.maxBitRate = 25'000'000;
+    encConfig.vbvBufferSize = 2'000'000;
+    encConfig.enableIntraRefresh = false;
+
+    NVENCEncoder encoder;
+    if (!encoder.Initialize(capturer.GetDevice(), encConfig)) {
+        std::cerr << "[Host ERROR] NVENC Init failed!" << std::endl;
+        return -1;
+    }
+
+    WindowsInputInjector inputInjector;
+    if (!inputInjector.Initialize()) {
+        std::cerr << "[Host WARNING] WindowsInputInjector failed to initialize" << std::endl;
+    }
+
+    WasapiOpusCapturer audioCapturer;
+    if (!audioCapturer.Initialize()) {
+        std::cerr << "[Host WARNING] Audio capturer failed to initialize" << std::endl;
+    }
+
+    WebRTCStreamer streamer;
+    if (!streamer.Initialize()) {
+        std::cerr << "[Host ERROR] WebRTC Init failed!" << std::endl;
+        return -1;
+    }
+
+    SignalingClient signaling("ws://127.0.0.1:8080");
+    signaling.SetOnMessageCallback([&](const std::string& msg) {
+        streamer.ProcessSignalingMessage(msg);
     });
 
-    pc->onLocalCandidate([this](rtc::Candidate candidate) {
-        json msg = {
-            {"type", "ice_candidate"},
-            {"candidate", candidate.candidate()},
-            {"sdpMid", candidate.mid()}
-        };
-        if (onLocalCandidate) {
-            onLocalCandidate(msg.dump());
+    streamer.SetSignalingSender([&](const std::string& msg) {
+        signaling.SendText(msg);
+    });
+
+    std::atomic<bool> forceIDR{true};
+    streamer.SetControlCallback([&](ControlCommandType cmd) {
+        if (cmd == ControlCommandType::RequestIDR) {
+            std::cout << "[Host] IDR Keyframe & Cursor resend requested" << std::endl;
+            forceIDR = true;
+            capturer.ResendCursorState();
         }
     });
 
-    pc->onLocalDescription([this](rtc::Description description) {
-        json msg = {
-            {"type", description.typeString()},
-            {"sdp", std::string(description)}
-        };
-        if (onLocalDescription) {
-            onLocalDescription(msg.dump());
+    streamer.SetInputCallback([&](const uint8_t* data, size_t size) {
+        if (size < sizeof(MessageType)) return;
+        auto type = *reinterpret_cast<const MessageType*>(data);
+
+        if (type == MessageType::InputMouseAbsolute && size >= sizeof(MouseAbsoluteMessage)) {
+            const auto* msg = reinterpret_cast<const MouseAbsoluteMessage*>(data);
+            inputInjector.InjectMouseAbsolute(msg->x, msg->y);
+        } else if (type == MessageType::InputMouseRelative && size >= sizeof(MouseRelativeMessage)) {
+            const auto* msg = reinterpret_cast<const MouseRelativeMessage*>(data);
+            inputInjector.InjectMouseRelative(msg->deltaX, msg->deltaY);
+        } else if (type == MessageType::InputMouseButton && size >= sizeof(MouseButtonMessage)) {
+            const auto* msg = reinterpret_cast<const MouseButtonMessage*>(data);
+            inputInjector.InjectMouseButton(msg->button, msg->pressed != 0);
+        } else if (type == MessageType::InputMouseWheel && size >= sizeof(MouseWheelMessage)) {
+            const auto* msg = reinterpret_cast<const MouseWheelMessage*>(data);
+            inputInjector.InjectMouseWheel(msg->deltaX, msg->deltaY);
+        } else if (type == MessageType::InputKeyboard && size >= sizeof(KeyboardMessage)) {
+            const auto* msg = reinterpret_cast<const KeyboardMessage*>(data);
+            inputInjector.InjectKeyboard(msg->vkCode, msg->pressed != 0);
         }
     });
 
-    std::cout << "[+] WebRTC PeerConnection успешно инициализирован." << std::endl;
+    std::atomic<uint64_t> sentFrames{0};
+    encoder.SetEncodedFrameCallback([&](const uint8_t* data, size_t size) {
+        sentFrames++;
+        if (sentFrames == 1 || sentFrames % 120 == 0) {
+            std::cout << "[Host Pipeline] Sent Frame #" << sentFrames << " (" << size << " bytes)" << std::endl;
+        }
+        streamer.SendVideoFrame(data, size);
+    });
+
+    audioCapturer.SetEncodedAudioCallback([&](const uint8_t* data, size_t size) {
+        streamer.SendAudioFrame(data, size);
+    });
+
+    capturer.SetCursorShapeCallback([&](const CursorShapeMessage& shape, const uint8_t* data) {
+        streamer.SendCursorShape(shape, data);
+    });
+
+    capturer.SetCursorPositionCallback([&](const CursorPositionMessage& pos) {
+        streamer.SendCursorPosition(pos);
+    });
+
+    ComPtr<ID3D11Texture2D> lastValidNV12;
+
+    // Гарантированный захват первого валидного кадра экрана до старта сети
+    std::cout << "[Host] Waiting for initial desktop frame..." << std::endl;
+    while (!lastValidNV12) {
+        ID3D11Texture2D* capturedTexture = nullptr;
+        CaptureStatus status = capturer.AcquireFrame(&capturedTexture, 50);
+        if (status == CaptureStatus::Success && capturedTexture) {
+            ID3D11Texture2D* nv12 = nullptr;
+            if (converter.Convert(capturedTexture, &nv12)) {
+                lastValidNV12.Attach(nv12);
+            }
+            capturedTexture->Release();
+            capturer.ReleaseFrame();
+        } else {
+            // Микро-тик ввода для побуждения DWM выдать начальный кадр
+            INPUT in = {};
+            in.type = INPUT_MOUSE;
+            in.mi.dwFlags = MOUSEEVENTF_MOVE;
+            SendInput(1, &in, sizeof(INPUT));
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    }
+    std::cout << "[Host] Initial desktop frame captured OK!" << std::endl;
+
+    signaling.Connect();
+    audioCapturer.Start();
+    std::cout << "[Host] Pipeline ready and running..." << std::endl;
+
+    auto lastFrameTime = std::chrono::steady_clock::now();
+
+    while (true) {
+        ID3D11Texture2D* capturedTexture = nullptr;
+        CaptureStatus status = capturer.AcquireFrame(&capturedTexture, 16);
+
+        if (status == CaptureStatus::AccessLost) {
+            std::cout << "[Host WARNING] Access Lost -> Retrying..." << std::endl;
+            while (!capturer.Initialize()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            std::cout << "[Host] Desktop restored: " << capturer.GetWidth() << "x" << capturer.GetHeight() << std::endl;
+            converter.Initialize(capturer.GetDevice(), capturer.GetContext(), capturer.GetWidth(), capturer.GetHeight());
+            encConfig.width = capturer.GetWidth();
+            encConfig.height = capturer.GetHeight();
+            encoder.Initialize(capturer.GetDevice(), encConfig);
+            forceIDR = true;
+            continue;
+        }
+
+        auto now = std::chrono::steady_clock::now();
+
+        if (status == CaptureStatus::Success && capturedTexture) {
+            ID3D11Texture2D* nv12Texture = nullptr;
+            if (converter.Convert(capturedTexture, &nv12Texture)) {
+                lastValidNV12.Reset();
+                lastValidNV12.Attach(nv12Texture);
+
+                bool needIDR = forceIDR.exchange(false);
+                encoder.EncodeFrame(lastValidNV12.Get(), needIDR);
+                lastFrameTime = now;
+            }
+            capturedTexture->Release();
+            capturer.ReleaseFrame();
+        } else {
+            auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFrameTime).count();
+            if (lastValidNV12 && (forceIDR.load() || elapsedMs >= 16)) {
+                bool needIDR = forceIDR.exchange(false);
+                encoder.EncodeFrame(lastValidNV12.Get(), needIDR);
+                lastFrameTime = now;
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+    }
+
+    return 0;
+}
+```
+
+38. *host/src/audio/wasapi_opus_capturer.cpp*
+```
+#include "audio/wasapi_opus_capturer.h"
+#include <chrono>
+#include <iostream>
+#include <vector>
+
+WasapiOpusCapturer::WasapiOpusCapturer() = default;
+
+WasapiOpusCapturer::~WasapiOpusCapturer() noexcept {
+    Shutdown();
+}
+
+bool WasapiOpusCapturer::Initialize() {
+    Shutdown();
+
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
+    if (FAILED(hr)) return false;
+
+    ComPtr<IMMDevice> device;
+    hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
+    if (FAILED(hr)) return false;
+
+    hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &audioClient_);
+    if (FAILED(hr)) return false;
+
+    WAVEFORMATEX* mixFormat = nullptr;
+    hr = audioClient_->GetMixFormat(&mixFormat);
+    if (FAILED(hr)) return false;
+
+    channels_ = mixFormat->nChannels;
+    sampleRate_ = mixFormat->nSamplesPerSec;
+
+    hr = audioClient_->Initialize(
+        AUDCLNT_SHAREMODE_SHARED,
+        AUDCLNT_STREAMFLAGS_LOOPBACK,
+        1000000, // 100ms буфер
+        0,
+        mixFormat,
+        nullptr
+    );
+
+    CoTaskMemFree(mixFormat);
+    if (FAILED(hr)) return false;
+
+    hr = audioClient_->GetService(IID_PPV_ARGS(&captureClient_));
+    if (FAILED(hr)) return false;
+
+    int opusError = 0;
+    opusEncoder_ = opus_encoder_create(48000, 2, OPUS_APPLICATION_AUDIO, &opusError);
+    if (opusError != OPUS_OK || !opusEncoder_) return false;
+
+    opus_encoder_ctl(opusEncoder_, OPUS_SET_BITRATE(128000));
+    opus_encoder_ctl(opusEncoder_, OPUS_SET_COMPLEXITY(10));
+    opus_encoder_ctl(opusEncoder_, OPUS_SET_SIGNAL(OPUS_SIGNAL_MUSIC));
+
     return true;
 }
 
-void WebRTCManager::SetRemoteDescription(const std::string& type, const std::string& sdp) {
-    if (type == "offer") {
-        std::cout << "[WebRTC] Новый клиент (или переподключение)! Перезапускаем сессию..." << std::endl;
-        if (pc) {
-            pc->close(); 
+void WasapiOpusCapturer::Shutdown() noexcept {
+    Stop();
+    if (opusEncoder_) {
+        opus_encoder_destroy(opusEncoder_);
+        opusEncoder_ = nullptr;
+    }
+    captureClient_.Reset();
+    audioClient_.Reset();
+}
+
+bool WasapiOpusCapturer::Start() {
+    if (running_.exchange(true)) return true;
+    if (!audioClient_ || !captureClient_ || !opusEncoder_) {
+        running_ = false;
+        return false;
+    }
+
+    HRESULT hr = audioClient_->Start();
+    if (FAILED(hr)) {
+        running_ = false;
+        return false;
+    }
+
+    captureThread_ = std::thread([this]() {
+        const int OPUS_FRAME_SIZE = 960; // 20ms @ 48kHz stereo
+        std::vector<float> pcmBuffer;
+        pcmBuffer.reserve(OPUS_FRAME_SIZE * 2 * 4);
+        std::vector<uint8_t> opusPacket(4000);
+
+        while (running_) {
+            UINT32 packetLength = 0;
+            HRESULT hrPacket = captureClient_->GetNextPacketSize(&packetLength);
+
+            if (FAILED(hrPacket) || packetLength == 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue;
+            }
+
+            BYTE* data = nullptr;
+            UINT32 numFrames = 0;
+            DWORD flags = 0;
+
+            hrPacket = captureClient_->GetBuffer(&data, &numFrames, &flags, nullptr, nullptr);
+            if (SUCCEEDED(hrPacket)) {
+                if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
+                    pcmBuffer.insert(pcmBuffer.end(), numFrames * 2, 0.0f);
+                } else {
+                    const float* floatData = reinterpret_cast<const float*>(data);
+                    pcmBuffer.insert(pcmBuffer.end(), floatData, floatData + (numFrames * 2));
+                }
+                captureClient_->ReleaseBuffer(numFrames);
+
+                while (pcmBuffer.size() >= static_cast<size_t>(OPUS_FRAME_SIZE * 2)) {
+                    opus_int32 encodedBytes = opus_encode_float(
+                        opusEncoder_,
+                        pcmBuffer.data(),
+                        OPUS_FRAME_SIZE,
+                        opusPacket.data(),
+                        static_cast<opus_int32>(opusPacket.size())
+                    );
+
+                    if (encodedBytes > 0 && encodedAudioCallback_) {
+                        encodedAudioCallback_(opusPacket.data(), static_cast<size_t>(encodedBytes));
+                    }
+
+                    pcmBuffer.erase(pcmBuffer.begin(), pcmBuffer.begin() + (OPUS_FRAME_SIZE * 2));
+                }
+            }
         }
-        Init(); 
-    }
+    });
 
-    std::cout << "[WebRTC] Применяем Remote Description типа: " << type << std::endl;
-    pc->setRemoteDescription(rtc::Description(sdp, type));
-    
-    if (type == "offer") {
-        std::cout << "[WebRTC] Offer получен. Генерируем Answer..." << std::endl;
-        pc->setLocalDescription(); 
-    }
+    return true;
 }
 
-void WebRTCManager::AddRemoteCandidate(const std::string& candidate, const std::string& mid) {
-    pc->addRemoteCandidate(rtc::Candidate(candidate, mid));
-    std::cout << "[WebRTC] Добавлен Remote ICE Candidate." << std::endl;
-}
-
-void WebRTCManager::SendVideoData(const std::vector<uint8_t>& data) {
-    auto track = videoTrack.load(); 
-    if (track && track->isOpen()) {
-        rtc::binary sample(
-            reinterpret_cast<const std::byte*>(data.data()), 
-            reinterpret_cast<const std::byte*>(data.data() + data.size())
-        );
-        track->send(sample);
+void WasapiOpusCapturer::Stop() noexcept {
+    if (!running_.exchange(false)) return;
+    if (captureThread_.joinable()) {
+        captureThread_.join();
+    }
+    if (audioClient_) {
+        audioClient_->Stop();
     }
 }
 ```
 
-23. *host/src/WebRTCManager.h*
+39. *host/src/capture/dxgi_capturer.cpp*
 ```
-#pragma once
-#include <rtc/rtc.hpp>
-#include <memory>
-#include <string>
-#include <functional>
+#include "capture/dxgi_capturer.h"
 #include <iostream>
 
-class WebRTCManager {
-public:
-    WebRTCManager();
-    ~WebRTCManager();
+DXGICapturer::DXGICapturer() {
+    shapeBuffer_.resize(64 * 64 * 4);
+    convertedShapeBuffer_.resize(64 * 64 * 4);
+}
 
-    bool Init();
+DXGICapturer::~DXGICapturer() noexcept {
+    Shutdown();
+}
 
-    void SetRemoteDescription(const std::string& type, const std::string& sdp);
-    void AddRemoteCandidate(const std::string& candidate, const std::string& mid);
+bool DXGICapturer::Initialize() {
+    Shutdown();
 
-    std::function<void(const std::string&)> onLocalDescription;
-    std::function<void(const std::string&)> onLocalCandidate;
+    D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
+    D3D_FEATURE_LEVEL featureLevel;
 
-    void SendVideoData(const std::vector<uint8_t>& data);
+    HRESULT hr = D3D11CreateDevice(
+        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+        featureLevels, ARRAYSIZE(featureLevels),
+        D3D11_SDK_VERSION, &device_, &featureLevel, &context_
+    );
 
-private:
-    std::shared_ptr<rtc::PeerConnection> pc;
-    std::atomic<std::shared_ptr<rtc::Track>> videoTrack;
-};
+    if (FAILED(hr)) return false;
+
+    ComPtr<IDXGIDevice> dxgiDevice;
+    device_.As(&dxgiDevice);
+
+    ComPtr<IDXGIAdapter> dxgiAdapter;
+    dxgiDevice->GetAdapter(&dxgiAdapter);
+
+    ComPtr<IDXGIOutput> dxgiOutput;
+    if (FAILED(dxgiAdapter->EnumOutputs(0, &dxgiOutput))) return false;
+
+    ComPtr<IDXGIOutput1> dxgiOutput1;
+    dxgiOutput.As(&dxgiOutput1);
+
+    DXGI_OUTPUT_DESC outDesc;
+    dxgiOutput->GetDesc(&outDesc);
+    width_ = outDesc.DesktopCoordinates.right - outDesc.DesktopCoordinates.left;
+    height_ = outDesc.DesktopCoordinates.bottom - outDesc.DesktopCoordinates.top;
+
+    hr = dxgiOutput1->DuplicateOutput(device_.Get(), &duplication_);
+    return SUCCEEDED(hr);
+}
+
+void DXGICapturer::Shutdown() noexcept {
+    ReleaseFrame();
+    duplication_.Reset();
+    context_.Reset();
+    device_.Reset();
+}
+
+void DXGICapturer::ResendCursorState() {
+    if (hasCachedShape_ && cursorShapeCallback_ && !cachedShapeData_.empty()) {
+        cursorShapeCallback_(cachedShape_, cachedShapeData_.data());
+    }
+    if (hasCachedPos_ && cursorPositionCallback_) {
+        cursorPositionCallback_(cachedPos_);
+    }
+}
+
+CaptureStatus DXGICapturer::AcquireFrame(ID3D11Texture2D** outTexture, uint32_t timeoutMs) {
+    if (!duplication_ || !outTexture) return CaptureStatus::Error;
+
+    ReleaseFrame();
+
+    DXGI_OUTDUPL_FRAME_INFO frameInfo;
+    ComPtr<IDXGIResource> desktopResource;
+
+    HRESULT hr = duplication_->AcquireNextFrame(timeoutMs, &frameInfo, &desktopResource);
+
+    if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
+        ProcessCursor(frameInfo);
+        return CaptureStatus::Timeout;
+    }
+
+    if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_INVALID_CALL) {
+        return CaptureStatus::AccessLost;
+    }
+
+    if (FAILED(hr)) {
+        return CaptureStatus::Error;
+    }
+
+    frameAcquired_ = true;
+    hr = desktopResource.As(&currentFrameTexture_);
+    if (FAILED(hr)) {
+        ReleaseFrame();
+        return CaptureStatus::Error;
+    }
+
+    ProcessCursor(frameInfo);
+
+    *outTexture = currentFrameTexture_.Get();
+    (*outTexture)->AddRef();
+    return CaptureStatus::Success;
+}
+
+void DXGICapturer::ReleaseFrame() {
+    if (frameAcquired_ && duplication_) {
+        currentFrameTexture_.Reset();
+        duplication_->ReleaseFrame();
+        frameAcquired_ = false;
+    }
+}
+
+void DXGICapturer::ProcessCursor(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) {
+    CURSORINFO ci = { sizeof(CURSORINFO) };
+    bool isShowing = true;
+    if (GetCursorInfo(&ci)) {
+        isShowing = (ci.flags & CURSOR_SHOWING) != 0;
+    }
+
+    // Проверяем изменение позиции или глобального статуса видимости игры
+    if (frameInfo.LastMouseUpdateTime.QuadPart != 0 || isShowing != (cachedPos_.visible != 0)) {
+        cachedPos_.type = MessageType::CursorPosition;
+        if (frameInfo.PointerPosition.Visible) {
+            cachedPos_.x = frameInfo.PointerPosition.Position.x;
+            cachedPos_.y = frameInfo.PointerPosition.Position.y;
+        } else if (ci.flags & CURSOR_SHOWING) {
+            cachedPos_.x = ci.ptScreenPos.x;
+            cachedPos_.y = ci.ptScreenPos.y;
+        }
+        cachedPos_.visible = isShowing ? 1 : 0;
+        hasCachedPos_ = true;
+
+        if (cursorPositionCallback_) {
+            cursorPositionCallback_(cachedPos_);
+        }
+    }
+
+    if (frameInfo.PointerShapeBufferSize > 0) {
+        if (shapeBuffer_.size() < frameInfo.PointerShapeBufferSize) {
+            shapeBuffer_.resize(frameInfo.PointerShapeBufferSize);
+        }
+
+        UINT requiredSize = 0;
+        DXGI_OUTDUPL_POINTER_SHAPE_INFO shapeInfo;
+        HRESULT hr = duplication_->GetFramePointerShape(
+            frameInfo.PointerShapeBufferSize,
+            shapeBuffer_.data(),
+            &requiredSize,
+            &shapeInfo
+        );
+
+        if (SUCCEEDED(hr)) {
+            CursorShapeMessage msg;
+            msg.type = MessageType::CursorShape;
+            msg.width = shapeInfo.Width;
+            msg.height = shapeInfo.Height;
+            msg.hotspotX = shapeInfo.HotSpot.x;
+            msg.hotspotY = shapeInfo.HotSpot.y;
+
+            if (shapeInfo.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR) {
+                msg.dataSize = shapeInfo.Width * shapeInfo.Height * 4;
+                cachedShape_ = msg;
+                cachedShapeData_.assign(shapeBuffer_.data(), shapeBuffer_.data() + msg.dataSize);
+                hasCachedShape_ = true;
+
+                if (cursorShapeCallback_) {
+                    cursorShapeCallback_(msg, shapeBuffer_.data());
+                }
+            } else if (shapeInfo.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME) {
+                UINT actualHeight = shapeInfo.Height / 2;
+                msg.height = actualHeight;
+                msg.dataSize = shapeInfo.Width * actualHeight * 4;
+
+                if (convertedShapeBuffer_.size() < msg.dataSize) {
+                    convertedShapeBuffer_.resize(msg.dataSize);
+                }
+
+                auto* dst = reinterpret_cast<uint32_t*>(convertedShapeBuffer_.data());
+                const uint8_t* andMask = shapeBuffer_.data();
+                const uint8_t* xorMask = shapeBuffer_.data() + (shapeInfo.Pitch * actualHeight);
+
+                for (UINT row = 0; row < actualHeight; ++row) {
+                    for (UINT col = 0; col < shapeInfo.Width; ++col) {
+                        UINT byteIdx = (row * shapeInfo.Pitch) + (col / 8);
+                        UINT bitMask = 0x80 >> (col % 8);
+
+                        bool andBit = (andMask[byteIdx] & bitMask) != 0;
+                        bool xorBit = (xorMask[byteIdx] & bitMask) != 0;
+
+                        if (!andBit && !xorBit) {
+                            dst[row * shapeInfo.Width + col] = 0xFF000000;
+                        } else if (!andBit && xorBit) {
+                            dst[row * shapeInfo.Width + col] = 0xFFFFFFFF;
+                        } else {
+                            dst[row * shapeInfo.Width + col] = 0x00000000;
+                        }
+                    }
+                }
+
+                cachedShape_ = msg;
+                cachedShapeData_.assign(convertedShapeBuffer_.data(), convertedShapeBuffer_.data() + msg.dataSize);
+                hasCachedShape_ = true;
+
+                if (cursorShapeCallback_) {
+                    cursorShapeCallback_(msg, convertedShapeBuffer_.data());
+                }
+            }
+        }
+    }
+}
 ```
 
-24. *host/src/nvenc/nvEncodeAPI.h*
+40. *host/src/color_converter/d3d11_video_processor.cpp*
 ```
-[Содержимое файла пропущено по условию]
+#include "color_converter/d3d11_video_processor.h"
+
+D3D11VideoProcessorConverter::D3D11VideoProcessorConverter() = default;
+
+D3D11VideoProcessorConverter::~D3D11VideoProcessorConverter() {
+    Shutdown();
+}
+
+bool D3D11VideoProcessorConverter::Initialize(ID3D11Device* device, ID3D11DeviceContext* context, uint32_t width, uint32_t height) {
+    if (!device || !context || width == 0 || height == 0) {
+        return false;
+    }
+
+    Shutdown();
+
+    device_ = device;
+    context_ = context;
+    width_ = width;
+    height_ = height;
+
+    HRESULT hr = device_.As(&videoDevice_);
+    if (FAILED(hr)) {
+        Shutdown();
+        return false;
+    }
+
+    hr = context_.As(&videoContext_);
+    if (FAILED(hr)) {
+        Shutdown();
+        return false;
+    }
+
+    if (!InitializeVideoPipeline()) {
+        Shutdown();
+        return false;
+    }
+
+    if (!CreateOutputResources()) {
+        Shutdown();
+        return false;
+    }
+
+    return true;
+}
+
+void D3D11VideoProcessorConverter::Shutdown() {
+    outputView_.Reset();
+    outputTextureNV12_.Reset();
+    videoProcessor_.Reset();
+    videoProcessorEnumerator_.Reset();
+    videoContext_.Reset();
+    videoDevice_.Reset();
+    context_.Reset();
+    device_.Reset();
+    width_ = 0;
+    height_ = 0;
+}
+
+bool D3D11VideoProcessorConverter::InitializeVideoPipeline() {
+    D3D11_VIDEO_PROCESSOR_CONTENT_DESC contentDesc = {};
+    contentDesc.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+    contentDesc.InputFrameRate.Numerator = 60;
+    contentDesc.InputFrameRate.Denominator = 1;
+    contentDesc.InputWidth = width_;
+    contentDesc.InputHeight = height_;
+    contentDesc.OutputWidth = width_;
+    contentDesc.OutputHeight = height_;
+    contentDesc.OutputFrameRate.Numerator = 60;
+    contentDesc.OutputFrameRate.Denominator = 1;
+    contentDesc.Usage = D3D11_VIDEO_USAGE_OPTIMAL_SPEED;
+
+    HRESULT hr = videoDevice_->CreateVideoProcessorEnumerator(&contentDesc, &videoProcessorEnumerator_);
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    UINT flags = 0;
+    hr = videoProcessorEnumerator_->CheckVideoProcessorFormat(DXGI_FORMAT_B8G8R8A8_UNORM, &flags);
+    if (FAILED(hr) || !(flags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT)) {
+        return false;
+    }
+
+    hr = videoProcessorEnumerator_->CheckVideoProcessorFormat(DXGI_FORMAT_NV12, &flags);
+    if (FAILED(hr) || !(flags & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT)) {
+        return false;
+    }
+
+    hr = videoDevice_->CreateVideoProcessor(videoProcessorEnumerator_.Get(), 0, &videoProcessor_);
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE colorSpace = {};
+    colorSpace.Usage = 0;
+    colorSpace.RGB_Range = 0;
+    colorSpace.YCbCr_Matrix = 1;
+    colorSpace.YCbCr_xvYCC = 0;
+
+    videoContext_->VideoProcessorSetStreamColorSpace(videoProcessor_.Get(), 0, &colorSpace);
+    videoContext_->VideoProcessorSetOutputColorSpace(videoProcessor_.Get(), &colorSpace);
+
+    return true;
+}
+
+bool D3D11VideoProcessorConverter::CreateOutputResources() {
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = width_;
+    texDesc.Height = height_;
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_NV12;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.SampleDesc.Quality = 0;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    texDesc.CPUAccessFlags = 0;
+    texDesc.MiscFlags = 0;
+
+    HRESULT hr = device_->CreateTexture2D(&texDesc, nullptr, &outputTextureNV12_);
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC outViewDesc = {};
+    outViewDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+    outViewDesc.Texture2D.MipSlice = 0;
+
+    hr = videoDevice_->CreateVideoProcessorOutputView(
+        outputTextureNV12_.Get(),
+        videoProcessorEnumerator_.Get(),
+        &outViewDesc,
+        &outputView_
+    );
+
+    return SUCCEEDED(hr);
+}
+
+bool D3D11VideoProcessorConverter::Convert(ID3D11Texture2D* pInputTexture, ID3D11Texture2D** ppOutputTexture) {
+    if (!pInputTexture || !ppOutputTexture || !videoProcessor_ || !outputView_) {
+        return false;
+    }
+
+    *ppOutputTexture = nullptr;
+
+    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC inViewDesc = {};
+    inViewDesc.FourCC = 0;
+    inViewDesc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+    inViewDesc.Texture2D.MipSlice = 0;
+    inViewDesc.Texture2D.ArraySlice = 0;
+
+    ComPtr<ID3D11VideoProcessorInputView> inputView;
+    HRESULT hr = videoDevice_->CreateVideoProcessorInputView(
+        pInputTexture,
+        videoProcessorEnumerator_.Get(),
+        &inViewDesc,
+        &inputView
+    );
+
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    D3D11_VIDEO_PROCESSOR_STREAM streamData = {};
+    streamData.Enable = TRUE;
+    streamData.OutputIndex = 0;
+    streamData.InputFrameOrField = 0;
+    streamData.PastFrames = 0;
+    streamData.FutureFrames = 0;
+    streamData.pInputSurface = inputView.Get();
+
+    RECT srcRect = { 0, 0, static_cast<LONG>(width_), static_cast<LONG>(height_) };
+    RECT destRect = { 0, 0, static_cast<LONG>(width_), static_cast<LONG>(height_) };
+
+    videoContext_->VideoProcessorSetStreamSourceRect(videoProcessor_.Get(), 0, TRUE, &srcRect);
+    videoContext_->VideoProcessorSetStreamDestRect(videoProcessor_.Get(), 0, TRUE, &destRect);
+    videoContext_->VideoProcessorSetOutputTargetRect(videoProcessor_.Get(), TRUE, &destRect);
+
+    hr = videoContext_->VideoProcessorBlt(
+        videoProcessor_.Get(),
+        outputView_.Get(),
+        0,
+        1,
+        &streamData
+    );
+
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    *ppOutputTexture = outputTextureNV12_.Get();
+    (*ppOutputTexture)->AddRef();
+    return true;
+}
 ```
 
-25. *signaling/main.py*
+41. *host/src/encoder/nvenc_encoder.cpp*
+```
+#include "encoder/nvenc_encoder.h"
+
+NVENCEncoder::NVENCEncoder() = default;
+
+NVENCEncoder::~NVENCEncoder() noexcept {
+    Shutdown();
+}
+
+bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config) {
+    if (!device) {
+        return false;
+    }
+
+    Shutdown();
+    device_ = device;
+    config_ = config;
+
+    nvencModule_ = LoadLibraryW(L"nvEncodeAPI64.dll");
+    if (!nvencModule_) {
+        return false;
+    }
+
+    typedef NVENCSTATUS(NVENCAPI* PNVENCODEAPICREATEINSTANCE)(NV_ENCODE_API_FUNCTION_LIST*);
+    auto NvEncodeAPICreateInstance = reinterpret_cast<PNVENCODEAPICREATEINSTANCE>(
+        GetProcAddress(nvencModule_, "NvEncodeAPICreateInstance")
+    );
+
+    if (!NvEncodeAPICreateInstance) {
+        Shutdown();
+        return false;
+    }
+
+    nvApi_ = std::make_unique<NV_ENCODE_API_FUNCTION_LIST>();
+    nvApi_->version = NV_ENCODE_API_FUNCTION_LIST_VER;
+    if (NvEncodeAPICreateInstance(nvApi_.get()) != NV_ENC_SUCCESS) {
+        Shutdown();
+        return false;
+    }
+
+    NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS openSessionParams = {};
+    openSessionParams.version = NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER;
+    openSessionParams.device = device_.Get();
+    openSessionParams.deviceType = NV_ENC_DEVICE_TYPE_DIRECTX;
+    openSessionParams.apiVersion = NVENCAPI_VERSION;
+
+    if (nvApi_->nvEncOpenEncodeSessionEx(&openSessionParams, &encoder_) != NV_ENC_SUCCESS) {
+        Shutdown();
+        return false;
+    }
+
+    NV_ENC_PRESET_CONFIG presetConfig = {};
+    presetConfig.version = NV_ENC_PRESET_CONFIG_VER;
+    presetConfig.presetCfg.version = NV_ENC_CONFIG_VER;
+
+    GUID codecGuid = NV_ENC_CODEC_H264_GUID;
+    GUID presetGuid = NV_ENC_PRESET_P1_GUID;
+
+    if (nvApi_->nvEncGetEncodePresetConfigEx(encoder_, codecGuid, presetGuid, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &presetConfig) != NV_ENC_SUCCESS) {
+        Shutdown();
+        return false;
+    }
+
+    NV_ENC_CONFIG encodeConfig = presetConfig.presetCfg;
+    encodeConfig.gopLength = NVENC_INFINITE_GOPLENGTH;
+    encodeConfig.frameIntervalP = 1;
+    encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
+    encodeConfig.rcParams.averageBitRate = config_.bitRate;
+    encodeConfig.rcParams.maxBitRate = config_.maxBitRate;
+    encodeConfig.rcParams.vbvBufferSize = config_.vbvBufferSize;
+    encodeConfig.rcParams.vbvInitialDelay = config_.vbvBufferSize;
+    encodeConfig.rcParams.zeroReorderDelay = 1;
+
+    // Отключаем Intra Refresh волны для устранения рваного изображения
+    encodeConfig.encodeCodecConfig.h264Config.enableIntraRefresh = 0;
+    encodeConfig.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
+    encodeConfig.encodeCodecConfig.h264Config.idrPeriod = NVENC_INFINITE_GOPLENGTH;
+    encodeConfig.encodeCodecConfig.h264Config.sliceMode = 0;
+    encodeConfig.encodeCodecConfig.h264Config.sliceModeData = 0;
+
+    NV_ENC_INITIALIZE_PARAMS initParams = {};
+    initParams.version = NV_ENC_INITIALIZE_PARAMS_VER;
+    initParams.encodeGUID = codecGuid;
+    initParams.presetGUID = presetGuid;
+    initParams.encodeWidth = config_.width;
+    initParams.encodeHeight = config_.height;
+    initParams.darWidth = config_.width;
+    initParams.darHeight = config_.height;
+    initParams.frameRateNum = config_.frameRateNum;
+    initParams.frameRateDen = config_.frameRateDen;
+    initParams.enablePTD = 1;
+    initParams.encodeConfig = &encodeConfig;
+    initParams.tuningInfo = NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY;
+
+    if (nvApi_->nvEncInitializeEncoder(encoder_, &initParams) != NV_ENC_SUCCESS) {
+        Shutdown();
+        return false;
+    }
+
+    for (int i = 0; i < kSlotCount; ++i) {
+        NV_ENC_CREATE_BITSTREAM_BUFFER createBitstream = {};
+        createBitstream.version = NV_ENC_CREATE_BITSTREAM_BUFFER_VER;
+        if (nvApi_->nvEncCreateBitstreamBuffer(encoder_, &createBitstream) != NV_ENC_SUCCESS) {
+            Shutdown();
+            return false;
+        }
+        slots_[i].bitstreamBuffer = createBitstream.bitstreamBuffer;
+    }
+
+    return true;
+}
+
+void NVENCEncoder::Shutdown() noexcept {
+    if (nvApi_ && encoder_) {
+        for (auto& slot : slots_) {
+            if (slot.registeredResource) {
+                if (slot.mappedResource) {
+                    nvApi_->nvEncUnmapInputResource(encoder_, slot.mappedResource);
+                    slot.mappedResource = nullptr;
+                }
+                nvApi_->nvEncUnregisterResource(encoder_, slot.registeredResource);
+                slot.registeredResource = nullptr;
+            }
+            if (slot.bitstreamBuffer) {
+                nvApi_->nvEncDestroyBitstreamBuffer(encoder_, slot.bitstreamBuffer);
+                slot.bitstreamBuffer = nullptr;
+            }
+        }
+        nvApi_->nvEncDestroyEncoder(encoder_);
+        encoder_ = nullptr;
+    }
+
+    if (nvencModule_) {
+        FreeLibrary(nvencModule_);
+        nvencModule_ = nullptr;
+    }
+
+    device_.Reset();
+}
+
+bool NVENCEncoder::EncodeFrame(ID3D11Texture2D* texture, bool forceIDR) {
+    if (!nvApi_ || !encoder_ || !texture) {
+        return false;
+    }
+
+    auto& slot = slots_[currentSlot_];
+
+    if (slot.registeredResource) {
+        if (slot.mappedResource) {
+            nvApi_->nvEncUnmapInputResource(encoder_, slot.mappedResource);
+            slot.mappedResource = nullptr;
+        }
+        nvApi_->nvEncUnregisterResource(encoder_, slot.registeredResource);
+        slot.registeredResource = nullptr;
+    }
+
+    NV_ENC_REGISTER_RESOURCE registerResource = {};
+    registerResource.version = NV_ENC_REGISTER_RESOURCE_VER;
+    registerResource.resourceType = NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX;
+    registerResource.resourceToRegister = texture;
+    registerResource.width = config_.width;
+    registerResource.height = config_.height;
+    registerResource.pitch = config_.width;
+    registerResource.bufferFormat = NV_ENC_BUFFER_FORMAT_NV12;
+
+    if (nvApi_->nvEncRegisterResource(encoder_, &registerResource) != NV_ENC_SUCCESS) {
+        return false;
+    }
+    slot.registeredResource = registerResource.registeredResource;
+
+    NV_ENC_MAP_INPUT_RESOURCE mapInput = {};
+    mapInput.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
+    mapInput.registeredResource = slot.registeredResource;
+
+    if (nvApi_->nvEncMapInputResource(encoder_, &mapInput) != NV_ENC_SUCCESS) {
+        return false;
+    }
+    slot.mappedResource = mapInput.mappedResource;
+
+    NV_ENC_PIC_PARAMS picParams = {};
+    picParams.version = NV_ENC_PIC_PARAMS_VER;
+    picParams.inputBuffer = slot.mappedResource;
+    picParams.bufferFmt = NV_ENC_BUFFER_FORMAT_NV12;
+    picParams.inputWidth = config_.width;
+    picParams.inputHeight = config_.height;
+    picParams.outputBitstream = slot.bitstreamBuffer;
+    picParams.inputTimeStamp = frameIndex_++;
+    picParams.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
+
+    if (forceIDR) {
+        picParams.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
+    }
+
+    NVENCSTATUS status = nvApi_->nvEncEncodePicture(encoder_, &picParams);
+    if (status != NV_ENC_SUCCESS) {
+        return false;
+    }
+
+    NV_ENC_LOCK_BITSTREAM lockBitstream = {};
+    lockBitstream.version = NV_ENC_LOCK_BITSTREAM_VER;
+    lockBitstream.outputBitstream = slot.bitstreamBuffer;
+    lockBitstream.doNotWait = 0;
+
+    if (nvApi_->nvEncLockBitstream(encoder_, &lockBitstream) == NV_ENC_SUCCESS) {
+        if (encodedCallback_ && lockBitstream.bitstreamSizeInBytes > 0) {
+            encodedCallback_(reinterpret_cast<const uint8_t*>(lockBitstream.bitstreamBufferPtr), lockBitstream.bitstreamSizeInBytes);
+        }
+        nvApi_->nvEncUnlockBitstream(encoder_, slot.bitstreamBuffer);
+    }
+
+    currentSlot_ = (currentSlot_ + 1) % kSlotCount;
+    return true;
+}
+```
+
+42. *host/src/input/windows_input_injector.cpp*
+```
+#include "input/windows_input_injector.h"
+
+WindowsInputInjector::WindowsInputInjector() = default;
+WindowsInputInjector::~WindowsInputInjector() noexcept = default;
+
+bool WindowsInputInjector::Initialize() {
+    return true;
+}
+
+void WindowsInputInjector::InjectMouseRelative(int32_t deltaX, int32_t deltaY) {
+    INPUT input = {};
+    input.type = INPUT_MOUSE;
+    input.mi.dx = deltaX;
+    input.mi.dy = deltaY;
+    input.mi.dwFlags = MOUSEEVENTF_MOVE;
+    SendInput(1, &input, sizeof(INPUT));
+}
+
+void WindowsInputInjector::InjectMouseAbsolute(uint16_t x, uint16_t y) {
+    INPUT input = {};
+    input.type = INPUT_MOUSE;
+    input.mi.dx = static_cast<LONG>(x);
+    input.mi.dy = static_cast<LONG>(y);
+    input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+    SendInput(1, &input, sizeof(INPUT));
+}
+
+void WindowsInputInjector::InjectMouseButton(uint8_t button, bool pressed) {
+    INPUT input = {};
+    input.type = INPUT_MOUSE;
+
+    switch (button) {
+        case 1: // Left
+            input.mi.dwFlags = pressed ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
+            break;
+        case 2: // Middle
+            input.mi.dwFlags = pressed ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP;
+            break;
+        case 3: // Right
+            input.mi.dwFlags = pressed ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
+            break;
+        case 4: // XBUTTON1
+            input.mi.dwFlags = pressed ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
+            input.mi.mouseData = XBUTTON1;
+            break;
+        case 5: // XBUTTON2
+            input.mi.dwFlags = pressed ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
+            input.mi.mouseData = XBUTTON2;
+            break;
+        default:
+            return;
+    }
+
+    SendInput(1, &input, sizeof(INPUT));
+}
+
+void WindowsInputInjector::InjectMouseWheel(int32_t deltaX, int32_t deltaY) {
+    if (deltaY != 0) {
+        INPUT input = {};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = MOUSEEVENTF_WHEEL;
+        input.mi.mouseData = static_cast<DWORD>(deltaY * WHEEL_DELTA);
+        SendInput(1, &input, sizeof(INPUT));
+    }
+    if (deltaX != 0) {
+        INPUT input = {};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = MOUSEEVENTF_HWHEEL;
+        input.mi.mouseData = static_cast<DWORD>(deltaX * WHEEL_DELTA);
+        SendInput(1, &input, sizeof(INPUT));
+    }
+}
+
+void WindowsInputInjector::InjectKeyboard(uint16_t vkCode, bool pressed) {
+    INPUT input = {};
+    input.type = INPUT_KEYBOARD;
+    input.ki.wVk = vkCode;
+    input.ki.wScan = static_cast<WORD>(MapVirtualKeyW(vkCode, MAPVK_VK_TO_VSC));
+    input.ki.dwFlags = pressed ? 0 : KEYEVENTF_KEYUP;
+
+    if ((vkCode >= VK_PRIOR && vkCode <= VK_DOWN) ||
+        vkCode == VK_INSERT || vkCode == VK_DELETE ||
+        vkCode == VK_LWIN || vkCode == VK_RWIN ||
+        vkCode == VK_RMENU || vkCode == VK_RCONTROL ||
+        vkCode == VK_DIVIDE || vkCode == VK_NUMLOCK) {
+        input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    }
+
+    SendInput(1, &input, sizeof(INPUT));
+}
+```
+
+43. *host/src/network/signaling_client.cpp*
+```
+#include "network/signaling_client.h"
+
+SignalingClient::SignalingClient(std::string url) : serverUrl_(std::move(url)) {
+    ws_ = std::make_shared<rtc::WebSocket>();
+
+    ws_->onOpen([this]() {
+        json regMsg = {{"type", "register"}, {"role", "host"}};
+        ws_->send(regMsg.dump());
+        if (onStateChange_) {
+            onStateChange_(true);
+        }
+    });
+
+    ws_->onMessage([this](std::variant<rtc::binary, std::string> data) {
+        if (std::holds_alternative<std::string>(data)) {
+            if (onMessageReceived_) {
+                onMessageReceived_(std::get<std::string>(data));
+            }
+        }
+    });
+
+    ws_->onClosed([this]() {
+        if (onStateChange_) {
+            onStateChange_(false);
+        }
+    });
+
+    ws_->onError([this](const std::string&) {
+        if (onStateChange_) {
+            onStateChange_(false);
+        }
+    });
+}
+
+SignalingClient::~SignalingClient() noexcept {
+    Disconnect();
+}
+
+void SignalingClient::Connect() {
+    if (ws_) {
+        ws_->open(serverUrl_);
+    }
+}
+
+void SignalingClient::Disconnect() noexcept {
+    if (ws_) {
+        ws_->close();
+    }
+}
+
+void SignalingClient::SendText(const std::string& message) {
+    if (ws_ && ws_->isOpen()) {
+        ws_->send(message);
+    }
+}
+```
+
+44. *host/src/network/webrtc_streamer.cpp*
+```
+#include "network/webrtc_streamer.h"
+#include <nlohmann/json.hpp>
+#include <iostream>
+
+using json = nlohmann::json;
+
+WebRTCStreamer::WebRTCStreamer() {
+    cursorPayloadBuffer_.reserve(64 * 64 * 4 + sizeof(CursorShapeMessage));
+}
+
+WebRTCStreamer::~WebRTCStreamer() noexcept {
+    Shutdown();
+}
+
+bool WebRTCStreamer::Initialize() {
+    return true;
+}
+
+void WebRTCStreamer::CreatePeerConnection() {
+    peerConnected_ = false;
+    hasRemoteDescription_ = false;
+    pendingCandidates_.clear();
+
+    if (pc_) {
+        pc_->close();
+        pc_.reset();
+    }
+
+    rtc::Configuration config;
+    config.enableIceTcp = false;
+
+    pc_ = std::make_shared<rtc::PeerConnection>(config);
+
+    pc_->onLocalDescription([this](rtc::Description desc) {
+        std::cout << "[WebRTC Host] Local Description (" << desc.typeString() << ") -> Signaling" << std::endl;
+        if (signalingSend_) {
+            json msg = { {"type", desc.typeString()}, {"sdp", std::string(desc)} };
+            signalingSend_(msg.dump());
+        }
+    });
+
+    pc_->onLocalCandidate([this](rtc::Candidate cand) {
+        if (signalingSend_) {
+            json msg = { {"type", "ice_candidate"}, {"candidate", cand.candidate()}, {"sdpMid", cand.mid()} };
+            signalingSend_(msg.dump());
+        }
+    });
+
+    pc_->onStateChange([this](rtc::PeerConnection::State state) {
+        std::cout << "[WebRTC Host] State: " << state << std::endl;
+        peerConnected_ = (state == rtc::PeerConnection::State::Connected);
+        if (peerConnected_ && controlCallback_) {
+            controlCallback_(ControlCommandType::RequestIDR);
+        }
+    });
+
+    SetupDataChannels();
+}
+
+void WebRTCStreamer::SetupDataChannels() {
+    // Видео-канал: ненадежная доставка без повторов (UDP-like)
+    rtc::DataChannelInit videoInit;
+    videoInit.reliability.unordered = true;
+    videoInit.reliability.maxRetransmits = 0;
+    videoChannel_ = pc_->createDataChannel("video", videoInit);
+
+    // Канал ввода: без ограничений по времени жизни пакетов
+    rtc::DataChannelInit inputInit;
+    inputInit.reliability.unordered = true;
+    inputInit.reliability.maxRetransmits = 0;
+    inputChannel_ = pc_->createDataChannel("input", inputInit);
+
+    inputChannel_->onMessage([this](std::variant<rtc::binary, std::string> data) {
+        if (std::holds_alternative<rtc::binary>(data) && inputCallback_) {
+            const auto& bin = std::get<rtc::binary>(data);
+            inputCallback_(reinterpret_cast<const uint8_t*>(bin.data()), bin.size());
+        }
+    });
+
+    rtc::DataChannelInit audioInit;
+    audioInit.reliability.unordered = true;
+    audioInit.reliability.maxPacketLifeTime = std::chrono::milliseconds(100);
+    audioChannel_ = pc_->createDataChannel("audio", audioInit);
+
+    rtc::DataChannelInit cursorInit;
+    cursorInit.reliability.unordered = false;
+    cursorChannel_ = pc_->createDataChannel("cursor", cursorInit);
+
+    rtc::DataChannelInit controlInit;
+    controlInit.reliability.unordered = false;
+    controlChannel_ = pc_->createDataChannel("control", controlInit);
+
+    controlChannel_->onMessage([this](std::variant<rtc::binary, std::string> data) {
+        if (std::holds_alternative<rtc::binary>(data) && controlCallback_) {
+            const auto& bin = std::get<rtc::binary>(data);
+            if (bin.size() >= sizeof(ControlCommandMessage)) {
+                const auto* cmd = reinterpret_cast<const ControlCommandMessage*>(bin.data());
+                controlCallback_(cmd->command);
+            }
+        }
+    });
+}
+
+void WebRTCStreamer::StartSession() {
+    CreatePeerConnection();
+}
+
+void WebRTCStreamer::Shutdown() noexcept {
+    peerConnected_ = false;
+    hasRemoteDescription_ = false;
+    pendingCandidates_.clear();
+
+    if (videoChannel_) { videoChannel_->close(); videoChannel_.reset(); }
+    if (inputChannel_) { inputChannel_->close(); inputChannel_.reset(); }
+    if (audioChannel_) { audioChannel_->close(); audioChannel_.reset(); }
+    if (cursorChannel_) { cursorChannel_->close(); cursorChannel_.reset(); }
+    if (controlChannel_) { controlChannel_->close(); controlChannel_.reset(); }
+    if (pc_) { pc_->close(); pc_.reset(); }
+}
+
+void WebRTCStreamer::ProcessSignalingMessage(const std::string& msg) {
+    try {
+        auto data = json::parse(msg);
+        std::string type = data.value("type", "");
+
+        if (type == "start_session") {
+            std::cout << "[WebRTC Host] Client connected -> Starting session" << std::endl;
+            StartSession();
+        } else if (type == "answer") {
+            std::cout << "[WebRTC Host] Setting remote Answer" << std::endl;
+            pc_->setRemoteDescription(rtc::Description(data["sdp"], type));
+            hasRemoteDescription_ = true;
+
+            for (const auto& [cand, mid] : pendingCandidates_) {
+                pc_->addRemoteCandidate(rtc::Candidate(cand, mid));
+            }
+            pendingCandidates_.clear();
+        } else if (type == "ice_candidate") {
+            std::string cand = data["candidate"];
+            std::string mid = data["sdpMid"];
+
+            if (hasRemoteDescription_) {
+                pc_->addRemoteCandidate(rtc::Candidate(cand, mid));
+            } else {
+                pendingCandidates_.emplace_back(cand, mid);
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[WebRTC Host] Signaling Error: " << e.what() << std::endl;
+    }
+}
+
+void WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size) {
+    if (peerConnected_ && videoChannel_ && videoChannel_->isOpen() && data && size > 0) {
+        rtc::binary frame(reinterpret_cast<const std::byte*>(data), reinterpret_cast<const std::byte*>(data + size));
+        videoChannel_->send(std::move(frame));
+    }
+}
+
+void WebRTCStreamer::SendAudioFrame(const uint8_t* data, size_t size) {
+    if (peerConnected_ && audioChannel_ && audioChannel_->isOpen() && data && size > 0) {
+        rtc::binary frame(reinterpret_cast<const std::byte*>(data), reinterpret_cast<const std::byte*>(data + size));
+        audioChannel_->send(std::move(frame));
+    }
+}
+
+void WebRTCStreamer::SendCursorShape(const CursorShapeMessage& shape, const uint8_t* data) {
+    if (!peerConnected_ || !cursorChannel_ || !cursorChannel_->isOpen()) return;
+
+    size_t totalSize = sizeof(CursorShapeMessage) + shape.dataSize;
+    if (cursorPayloadBuffer_.size() < totalSize) {
+        cursorPayloadBuffer_.resize(totalSize);
+    }
+
+    memcpy(cursorPayloadBuffer_.data(), &shape, sizeof(CursorShapeMessage));
+    if (data && shape.dataSize > 0) {
+        memcpy(cursorPayloadBuffer_.data() + sizeof(CursorShapeMessage), data, shape.dataSize);
+    }
+
+    rtc::binary payload(
+        reinterpret_cast<const std::byte*>(cursorPayloadBuffer_.data()),
+        reinterpret_cast<const std::byte*>(cursorPayloadBuffer_.data() + totalSize)
+    );
+    cursorChannel_->send(std::move(payload));
+}
+
+void WebRTCStreamer::SendCursorPosition(const CursorPositionMessage& pos) {
+    if (peerConnected_ && cursorChannel_ && cursorChannel_->isOpen()) {
+        rtc::binary payload(
+            reinterpret_cast<const std::byte*>(&pos),
+            reinterpret_cast<const std::byte*>(&pos) + sizeof(CursorPositionMessage)
+        );
+        cursorChannel_->send(std::move(payload));
+    }
+}
+```
+
+45. *signaling/main.py*
 ```
 import asyncio
 import json
 import logging
 import websockets
-import os
 
-logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-connected_peers = {"host": None, "client": None}
+clients = {}
 
-def load_config():
-    config_path = os.path.join(os.path.dirname(__file__), "config", "server.json")
-    try:
-        with open(config_path, "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {"host": "0.0.0.0", "port": 8080}
-
-async def signaling_handler(websocket):
-    current_role = None
+async def handler(websocket):
+    role = None
     try:
         async for message in websocket:
             data = json.loads(message)
@@ -1480,54 +3724,41 @@ async def signaling_handler(websocket):
 
             if msg_type == "register":
                 role = data.get("role")
-                if role in connected_peers:
-                    if connected_peers[role] is not None:
-                        logger.warning(f"Отказ: Роль {role} уже занята.")
-                        await websocket.send(json.dumps({"type": "error", "message": "role_taken"}))
-                        return 
-                    
-                    connected_peers[role] = websocket
-                    current_role = role
-                    logger.info(f"Успешная регистрация: {role}")
-                else:
-                    logger.error(f"Неизвестная роль: {role}")
+                clients[role] = websocket
+                logging.info(f"Зарегистрирован: {role}")
+                
+                # Оповещаем хост только если подключился клиент
+                if role == "client" and "host" in clients:
+                    await clients["host"].send(json.dumps({"type": "start_session"}))
                 continue
 
-            if current_role and msg_type in ["offer", "answer", "ice_candidate"]:
-                target_role = "client" if current_role == "host" else "host"
-                target_ws = connected_peers.get(target_role)
+            target = "client" if role == "host" else "host"
+            if target in clients:
+                await clients[target].send(message)
+                logging.info(f"Пересылка {msg_type}: {role} -> {target}")
 
-                if target_ws:
-                    logger.info(f"Пересылка {msg_type} от {current_role} к {target_role}")
-                    await target_ws.send(message)
-                else:
-                    logger.warning(f"Получатель {target_role} не подключен.")
-
-    except websockets.ConnectionClosed:
+    except websockets.exceptions.ConnectionClosed:
         pass
     finally:
-        if current_role and connected_peers[current_role] == websocket:
-            connected_peers[current_role] = None
-            logger.info(f"Роль освобождена: {current_role}")
+        if role and role in clients:
+            del clients[role]
+            logging.info(f"Отключен: {role}")
 
 async def main():
-    config = load_config()
-    host, port = config["host"], config["port"]
-    logger.info(f"Запуск сигнального сервера на ws://{host}:{port}")
-    
-    async with websockets.serve(signaling_handler, host, port, ping_interval=20, ping_timeout=20):
+    async with websockets.serve(handler, "0.0.0.0", 8080):
+        logging.info("Сигнальный сервер запущен на ws://0.0.0.0:8080")
         await asyncio.Future()
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-26. *signaling/requirements.txt*
+46. *signaling/requirements.txt*
+```
+websockets>=12.0
 ```
 
-```
-
-27. *signaling/config/server.json*
+47. *signaling/config/server.json*
 ```
 {
     "host": "0.0.0.0",
@@ -1535,5 +3766,10 @@ if __name__ == "__main__":
     "log_level": "INFO"
 }
 
+```
+
+48. *third_party/nvenc/include/nvEncodeAPI.h*
+```
+[Содержимое файла пропущено по условию]
 ```
 

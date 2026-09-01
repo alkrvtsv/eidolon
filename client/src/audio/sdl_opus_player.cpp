@@ -1,4 +1,5 @@
 #include "audio/sdl_opus_player.h"
+#include <iostream>
 
 SDLOpusPlayer::SDLOpusPlayer() = default;
 
@@ -12,6 +13,7 @@ bool SDLOpusPlayer::Initialize() {
     int error = OPUS_OK;
     decoder_ = opus_decoder_create(kSampleRate, kChannels, &error);
     if (error != OPUS_OK || !decoder_) {
+        std::cerr << "[Client ERROR] Failed to create Opus decoder: " << error << std::endl;
         return false;
     }
 
@@ -24,12 +26,13 @@ bool SDLOpusPlayer::Initialize() {
     desiredSpec.freq = kSampleRate;
     desiredSpec.format = AUDIO_F32SYS;
     desiredSpec.channels = kChannels;
-    desiredSpec.samples = 480;
+    desiredSpec.samples = 960; // 20ms буфер SDL
     desiredSpec.callback = nullptr;
 
     SDL_AudioSpec obtainedSpec = {};
     deviceId_ = SDL_OpenAudioDevice(nullptr, 0, &desiredSpec, &obtainedSpec, 0);
     if (deviceId_ == 0) {
+        std::cerr << "[Client ERROR] SDL_OpenAudioDevice failed: " << SDL_GetError() << std::endl;
         Shutdown();
         return false;
     }
@@ -70,6 +73,7 @@ bool SDLOpusPlayer::DecodeAndPlay(const uint8_t* data, size_t size) {
         return false;
     }
 
+    // Если в очереди скопилось более 100 мс (джиттер сети), очищаем излишек для удержания низкой задержки
     uint32_t currentQueuedBytes = SDL_GetQueuedAudioSize(deviceId_);
     if (currentQueuedBytes > kMaxLatencyBytes) {
         SDL_ClearQueuedAudio(deviceId_);

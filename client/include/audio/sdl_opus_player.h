@@ -17,8 +17,8 @@ public:
 private:
     static constexpr int kSampleRate = 48000;
     static constexpr int kChannels = 2;
-    static constexpr int kMaxFrameSize = 960 * 6;
-    static constexpr uint32_t kMaxLatencyBytes = (kSampleRate * kChannels * sizeof(float) * 30) / 1000;
+    static constexpr int kMaxFrameSize = 5760; // 120ms буфер
+    static constexpr uint32_t kMaxLatencyBytes = (kSampleRate * kChannels * sizeof(float) * 100) / 1000; // 100ms джиттер-буфер
 
     OpusDecoder* decoder_{nullptr};
     SDL_AudioDeviceID deviceId_{0};
