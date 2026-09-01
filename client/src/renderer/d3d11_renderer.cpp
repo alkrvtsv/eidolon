@@ -101,7 +101,25 @@ bool D3D11Renderer::CreateVideoProcessor() {
     if (FAILED(hr)) return false;
 
     hr = videoDevice_->CreateVideoProcessor(videoProcessorEnum_.Get(), 0, &videoProcessor_);
-    return SUCCEEDED(hr);
+    if (FAILED(hr)) return false;
+
+    // Входной поток декодера: NV12 BT.709
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE inColorSpace = {};
+    inColorSpace.Usage = 0;
+    inColorSpace.RGB_Range = 0;
+    inColorSpace.YCbCr_Matrix = 1; // BT.709
+    inColorSpace.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
+    videoContext_->VideoProcessorSetStreamColorSpace(videoProcessor_.Get(), 0, &inColorSpace);
+
+    // Выходной поток SwapChain: RGB Full Range (0-255)
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE outColorSpace = {};
+    outColorSpace.Usage = 0;
+    outColorSpace.RGB_Range = 0;
+    outColorSpace.YCbCr_Matrix = 0;
+    outColorSpace.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
+    videoContext_->VideoProcessorSetOutputColorSpace(videoProcessor_.Get(), &outColorSpace);
+
+    return true;
 }
 
 bool D3D11Renderer::CreateRenderTarget() {

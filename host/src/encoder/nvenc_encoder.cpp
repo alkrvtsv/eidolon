@@ -53,16 +53,18 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     presetConfig.presetCfg.version = NV_ENC_CONFIG_VER;
 
     GUID codecGuid = NV_ENC_CODEC_H264_GUID;
-    GUID presetGuid = NV_ENC_PRESET_P1_GUID;
+    GUID presetGuid = NV_ENC_PRESET_P3_GUID;
 
-    if (nvApi_->nvEncGetEncodePresetConfigEx(encoder_, codecGuid, presetGuid, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &presetConfig) != NV_ENC_SUCCESS) {
+    if (nvApi_->nvEncGetEncodePresetConfigEx(encoder_, codecGuid, presetGuid, NV_ENC_TUNING_INFO_HIGH_QUALITY, &presetConfig) != NV_ENC_SUCCESS) {
         Shutdown();
         return false;
     }
 
     NV_ENC_CONFIG encodeConfig = presetConfig.presetCfg;
+    encodeConfig.profileGUID = NV_ENC_H264_PROFILE_HIGH_GUID;
     encodeConfig.gopLength = NVENC_INFINITE_GOPLENGTH;
     encodeConfig.frameIntervalP = 1;
+
     encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
     encodeConfig.rcParams.averageBitRate = config_.bitRate;
     encodeConfig.rcParams.maxBitRate = config_.maxBitRate;
@@ -70,12 +72,27 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     encodeConfig.rcParams.vbvInitialDelay = config_.vbvBufferSize;
     encodeConfig.rcParams.zeroReorderDelay = 1;
 
-    // Отключаем Intra Refresh волны для устранения рваного изображения
+    encodeConfig.rcParams.enableAQ = 1;
+    encodeConfig.rcParams.aqStrength = 8;
+    encodeConfig.rcParams.enableTemporalAQ = 1;
+
+    encodeConfig.rcParams.enableMinQP = 1;
+    encodeConfig.rcParams.enableMaxQP = 1;
+    encodeConfig.rcParams.minQP = { 6, 6, 6 };
+    encodeConfig.rcParams.maxQP = { 24, 24, 24 };
+
     encodeConfig.encodeCodecConfig.h264Config.enableIntraRefresh = 0;
     encodeConfig.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
     encodeConfig.encodeCodecConfig.h264Config.idrPeriod = NVENC_INFINITE_GOPLENGTH;
     encodeConfig.encodeCodecConfig.h264Config.sliceMode = 0;
     encodeConfig.encodeCodecConfig.h264Config.sliceModeData = 0;
+
+    encodeConfig.encodeCodecConfig.h264Config.h264VUIParameters.videoFormat = NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
+    encodeConfig.encodeCodecConfig.h264Config.h264VUIParameters.colourDescriptionPresentFlag = 1;
+    encodeConfig.encodeCodecConfig.h264Config.h264VUIParameters.colourPrimaries = NV_ENC_VUI_COLOR_PRIMARIES_BT709;
+    encodeConfig.encodeCodecConfig.h264Config.h264VUIParameters.transferCharacteristics = NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
+    encodeConfig.encodeCodecConfig.h264Config.h264VUIParameters.colourMatrix = NV_ENC_VUI_MATRIX_COEFFS_BT709;
+    encodeConfig.encodeCodecConfig.h264Config.h264VUIParameters.videoFullRangeFlag = 1;
 
     NV_ENC_INITIALIZE_PARAMS initParams = {};
     initParams.version = NV_ENC_INITIALIZE_PARAMS_VER;
@@ -89,7 +106,7 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     initParams.frameRateDen = config_.frameRateDen;
     initParams.enablePTD = 1;
     initParams.encodeConfig = &encodeConfig;
-    initParams.tuningInfo = NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY;
+    initParams.tuningInfo = NV_ENC_TUNING_INFO_HIGH_QUALITY;
 
     if (nvApi_->nvEncInitializeEncoder(encoder_, &initParams) != NV_ENC_SUCCESS) {
         Shutdown();

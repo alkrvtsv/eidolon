@@ -41,9 +41,9 @@ int main() {
     encConfig.height = capturer.GetHeight();
     encConfig.frameRateNum = 60;
     encConfig.frameRateDen = 1;
-    encConfig.bitRate = 20'000'000;
-    encConfig.maxBitRate = 25'000'000;
-    encConfig.vbvBufferSize = 2'000'000;
+    encConfig.bitRate = 35'000'000;       // 35 Mbps для высокой четкости 1440p
+    encConfig.maxBitRate = 45'000'000;    // 45 Mbps пиковый
+    encConfig.vbvBufferSize = 2'500'000;
     encConfig.enableIntraRefresh = false;
 
     NVENCEncoder encoder;
@@ -131,7 +131,6 @@ int main() {
 
     ComPtr<ID3D11Texture2D> lastValidNV12;
 
-    // Гарантированный захват первого валидного кадра экрана до старта сети
     std::cout << "[Host] Waiting for initial desktop frame..." << std::endl;
     while (!lastValidNV12) {
         ID3D11Texture2D* capturedTexture = nullptr;
@@ -139,12 +138,12 @@ int main() {
         if (status == CaptureStatus::Success && capturedTexture) {
             ID3D11Texture2D* nv12 = nullptr;
             if (converter.Convert(capturedTexture, &nv12)) {
-                lastValidNV12.Attach(nv12);
+                lastValidNV12 = nv12;
+                nv12->Release();
             }
             capturedTexture->Release();
             capturer.ReleaseFrame();
         } else {
-            // Микро-тик ввода для побуждения DWM выдать начальный кадр
             INPUT in = {};
             in.type = INPUT_MOUSE;
             in.mi.dwFlags = MOUSEEVENTF_MOVE;
@@ -183,8 +182,8 @@ int main() {
         if (status == CaptureStatus::Success && capturedTexture) {
             ID3D11Texture2D* nv12Texture = nullptr;
             if (converter.Convert(capturedTexture, &nv12Texture)) {
-                lastValidNV12.Reset();
-                lastValidNV12.Attach(nv12Texture);
+                lastValidNV12 = nv12Texture;
+                nv12Texture->Release();
 
                 bool needIDR = forceIDR.exchange(false);
                 encoder.EncodeFrame(lastValidNV12.Get(), needIDR);

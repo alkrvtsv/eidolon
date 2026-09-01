@@ -90,14 +90,18 @@ bool D3D11VideoProcessorConverter::InitializeVideoPipeline() {
         return false;
     }
 
-    D3D11_VIDEO_PROCESSOR_COLOR_SPACE colorSpace = {};
-    colorSpace.Usage = 0;
-    colorSpace.RGB_Range = 0;
-    colorSpace.YCbCr_Matrix = 1;
-    colorSpace.YCbCr_xvYCC = 0;
+    // Входной поток: RGB Full Range (0..255)
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE inColorSpace = {};
+    inColorSpace.Usage = 0;
+    inColorSpace.RGB_Range = 0; // Full Range (0-255)
+    inColorSpace.YCbCr_Matrix = 1; // BT.709
+    inColorSpace.YCbCr_xvYCC = 0;
+    inColorSpace.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
+    videoContext_->VideoProcessorSetStreamColorSpace(videoProcessor_.Get(), 0, &inColorSpace);
 
-    videoContext_->VideoProcessorSetStreamColorSpace(videoProcessor_.Get(), 0, &colorSpace);
-    videoContext_->VideoProcessorSetOutputColorSpace(videoProcessor_.Get(), &colorSpace);
+    // Выходной поток: NV12 BT.709 Full Range
+    D3D11_VIDEO_PROCESSOR_COLOR_SPACE outColorSpace = inColorSpace;
+    videoContext_->VideoProcessorSetOutputColorSpace(videoProcessor_.Get(), &outColorSpace);
 
     return true;
 }
