@@ -1,5 +1,6 @@
 #include "network/webrtc_streamer.h"
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <iostream>
 
 using json = nlohmann::json;
@@ -58,13 +59,11 @@ void WebRTCStreamer::CreatePeerConnection() {
 }
 
 void WebRTCStreamer::SetupDataChannels() {
-    // Видео-канал: ненадежная доставка без повторов (UDP-like)
     rtc::DataChannelInit videoInit;
     videoInit.reliability.unordered = true;
     videoInit.reliability.maxRetransmits = 0;
     videoChannel_ = pc_->createDataChannel("video", videoInit);
 
-    // Канал ввода: без ограничений по времени жизни пакетов
     rtc::DataChannelInit inputInit;
     inputInit.reliability.unordered = true;
     inputInit.reliability.maxRetransmits = 0;
@@ -151,45 +150,67 @@ void WebRTCStreamer::ProcessSignalingMessage(const std::string& msg) {
 }
 
 void WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size) {
-    if (peerConnected_ && videoChannel_ && videoChannel_->isOpen() && data && size > 0) {
-        rtc::binary frame(reinterpret_cast<const std::byte*>(data), reinterpret_cast<const std::byte*>(data + size));
-        videoChannel_->send(std::move(frame));
-    }
+    if (!peerConnected_ || !videoChannel_ || !videoChannel_->isOpen() || !data || size == 0) return;
+
+    try {
+        const size_t kMaxChunkSize = 64 * 1024;
+        size_t offset = 0;
+
+        while (offset < size) {
+            size_t chunkSize = (std::min)(kMaxChunkSize, size - offset);
+            rtc::binary chunk(
+                reinterpret_cast<const std::byte*>(data + offset),
+                reinterpret_cast<const std::byte*>(data + offset + chunkSize)
+            );
+            videoChannel_->send(std::move(chunk));
+            offset += chunkSize;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[WebRTC Host WARNING] SendVideoFrame: " << e.what() << std::endl;
+    } catch (...) {}
 }
 
 void WebRTCStreamer::SendAudioFrame(const uint8_t* data, size_t size) {
-    if (peerConnected_ && audioChannel_ && audioChannel_->isOpen() && data && size > 0) {
+    if (!peerConnected_ || !audioChannel_ || !audioChannel_->isOpen() || !data || size == 0) return;
+
+    try {
         rtc::binary frame(reinterpret_cast<const std::byte*>(data), reinterpret_cast<const std::byte*>(data + size));
         audioChannel_->send(std::move(frame));
-    }
+    } catch (...) {}
 }
 
 void WebRTCStreamer::SendCursorShape(const CursorShapeMessage& shape, const uint8_t* data) {
     if (!peerConnected_ || !cursorChannel_ || !cursorChannel_->isOpen()) return;
 
-    size_t totalSize = sizeof(CursorShapeMessage) + shape.dataSize;
-    if (cursorPayloadBuffer_.size() < totalSize) {
-        cursorPayloadBuffer_.resize(totalSize);
-    }
+    try {
+        size_t totalSize = sizeof(CursorShapeMessage) + shape.dataSize;
+        if (totalSize > 128 * 1024) return;
 
-    memcpy(cursorPayloadBuffer_.data(), &shape, sizeof(CursorShapeMessage));
-    if (data && shape.dataSize > 0) {
-        memcpy(cursorPayloadBuffer_.data() + sizeof(CursorShapeMessage), data, shape.dataSize);
-    }
+        if (cursorPayloadBuffer_.size() < totalSize) {
+            cursorPayloadBuffer_.resize(totalSize);
+        }
 
-    rtc::binary payload(
-        reinterpret_cast<const std::byte*>(cursorPayloadBuffer_.data()),
-        reinterpret_cast<const std::byte*>(cursorPayloadBuffer_.data() + totalSize)
-    );
-    cursorChannel_->send(std::move(payload));
+        memcpy(cursorPayloadBuffer_.data(), &shape, sizeof(CursorShapeMessage));
+        if (data && shape.dataSize > 0) {
+            memcpy(cursorPayloadBuffer_.data() + sizeof(CursorShapeMessage), data, shape.dataSize);
+        }
+
+        rtc::binary payload(
+            reinterpret_cast<const std::byte*>(cursorPayloadBuffer_.data()),
+            reinterpret_cast<const std::byte*>(cursorPayloadBuffer_.data() + totalSize)
+        );
+        cursorChannel_->send(std::move(payload));
+    } catch (...) {}
 }
 
 void WebRTCStreamer::SendCursorPosition(const CursorPositionMessage& pos) {
-    if (peerConnected_ && cursorChannel_ && cursorChannel_->isOpen()) {
+    if (!peerConnected_ || !cursorChannel_ || !cursorChannel_->isOpen()) return;
+
+    try {
         rtc::binary payload(
             reinterpret_cast<const std::byte*>(&pos),
             reinterpret_cast<const std::byte*>(&pos) + sizeof(CursorPositionMessage)
         );
         cursorChannel_->send(std::move(payload));
-    }
+    } catch (...) {}
 }

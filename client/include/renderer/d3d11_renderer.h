@@ -3,7 +3,7 @@
 #include "protocol.h"
 #include "decoder/ffmpeg_d3d11va_decoder.h"
 #include <d3d11.h>
-#include <dxgi.h>
+#include <dxgi1_3.h>
 #include <wrl/client.h>
 #include <cstdint>
 

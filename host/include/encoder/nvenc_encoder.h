@@ -26,9 +26,10 @@ public:
     uint32_t GetHeight() const override { return config_.height; }
 
 private:
-    static constexpr int kSlotCount = 4;
+    static constexpr int kSlotCount = 3;
 
     struct ResourceSlot {
+        ComPtr<ID3D11Texture2D> inputTexture;
         NV_ENC_REGISTERED_PTR registeredResource{nullptr};
         NV_ENC_INPUT_PTR mappedResource{nullptr};
         NV_ENC_OUTPUT_PTR bitstreamBuffer{nullptr};
@@ -39,6 +40,7 @@ private:
     void* encoder_{nullptr};
 
     ComPtr<ID3D11Device> device_;
+    ComPtr<ID3D11DeviceContext> context_;
     EncoderConfig config_{};
     uint64_t frameIndex_{0};
 

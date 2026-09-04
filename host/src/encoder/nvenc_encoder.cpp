@@ -13,6 +13,7 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
 
     Shutdown();
     device_ = device;
+    device_->GetImmediateContext(&context_);
     config_ = config;
 
     nvencModule_ = LoadLibraryW(L"nvEncodeAPI64.dll");
@@ -113,7 +114,41 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
         return false;
     }
 
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = config_.width;
+    texDesc.Height = config_.height;
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_NV12;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.SampleDesc.Quality = 0;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    texDesc.CPUAccessFlags = 0;
+    texDesc.MiscFlags = 0;
+
     for (int i = 0; i < kSlotCount; ++i) {
+        HRESULT hr = device_->CreateTexture2D(&texDesc, nullptr, &slots_[i].inputTexture);
+        if (FAILED(hr)) {
+            Shutdown();
+            return false;
+        }
+
+        NV_ENC_REGISTER_RESOURCE registerResource = {};
+        registerResource.version = NV_ENC_REGISTER_RESOURCE_VER;
+        registerResource.resourceType = NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX;
+        registerResource.resourceToRegister = slots_[i].inputTexture.Get();
+        registerResource.width = config_.width;
+        registerResource.height = config_.height;
+        registerResource.pitch = config_.width;
+        registerResource.bufferFormat = NV_ENC_BUFFER_FORMAT_NV12;
+
+        if (nvApi_->nvEncRegisterResource(encoder_, &registerResource) != NV_ENC_SUCCESS) {
+            Shutdown();
+            return false;
+        }
+        slots_[i].registeredResource = registerResource.registeredResource;
+
         NV_ENC_CREATE_BITSTREAM_BUFFER createBitstream = {};
         createBitstream.version = NV_ENC_CREATE_BITSTREAM_BUFFER_VER;
         if (nvApi_->nvEncCreateBitstreamBuffer(encoder_, &createBitstream) != NV_ENC_SUCCESS) {
@@ -129,11 +164,11 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
 void NVENCEncoder::Shutdown() noexcept {
     if (nvApi_ && encoder_) {
         for (auto& slot : slots_) {
+            if (slot.mappedResource) {
+                nvApi_->nvEncUnmapInputResource(encoder_, slot.mappedResource);
+                slot.mappedResource = nullptr;
+            }
             if (slot.registeredResource) {
-                if (slot.mappedResource) {
-                    nvApi_->nvEncUnmapInputResource(encoder_, slot.mappedResource);
-                    slot.mappedResource = nullptr;
-                }
                 nvApi_->nvEncUnregisterResource(encoder_, slot.registeredResource);
                 slot.registeredResource = nullptr;
             }
@@ -141,6 +176,7 @@ void NVENCEncoder::Shutdown() noexcept {
                 nvApi_->nvEncDestroyBitstreamBuffer(encoder_, slot.bitstreamBuffer);
                 slot.bitstreamBuffer = nullptr;
             }
+            slot.inputTexture.Reset();
         }
         nvApi_->nvEncDestroyEncoder(encoder_);
         encoder_ = nullptr;
@@ -151,38 +187,18 @@ void NVENCEncoder::Shutdown() noexcept {
         nvencModule_ = nullptr;
     }
 
+    context_.Reset();
     device_.Reset();
 }
 
 bool NVENCEncoder::EncodeFrame(ID3D11Texture2D* texture, bool forceIDR) {
-    if (!nvApi_ || !encoder_ || !texture) {
+    if (!nvApi_ || !encoder_ || !texture || !context_) {
         return false;
     }
 
     auto& slot = slots_[currentSlot_];
 
-    if (slot.registeredResource) {
-        if (slot.mappedResource) {
-            nvApi_->nvEncUnmapInputResource(encoder_, slot.mappedResource);
-            slot.mappedResource = nullptr;
-        }
-        nvApi_->nvEncUnregisterResource(encoder_, slot.registeredResource);
-        slot.registeredResource = nullptr;
-    }
-
-    NV_ENC_REGISTER_RESOURCE registerResource = {};
-    registerResource.version = NV_ENC_REGISTER_RESOURCE_VER;
-    registerResource.resourceType = NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX;
-    registerResource.resourceToRegister = texture;
-    registerResource.width = config_.width;
-    registerResource.height = config_.height;
-    registerResource.pitch = config_.width;
-    registerResource.bufferFormat = NV_ENC_BUFFER_FORMAT_NV12;
-
-    if (nvApi_->nvEncRegisterResource(encoder_, &registerResource) != NV_ENC_SUCCESS) {
-        return false;
-    }
-    slot.registeredResource = registerResource.registeredResource;
+    context_->CopyResource(slot.inputTexture.Get(), texture);
 
     NV_ENC_MAP_INPUT_RESOURCE mapInput = {};
     mapInput.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
@@ -209,6 +225,8 @@ bool NVENCEncoder::EncodeFrame(ID3D11Texture2D* texture, bool forceIDR) {
 
     NVENCSTATUS status = nvApi_->nvEncEncodePicture(encoder_, &picParams);
     if (status != NV_ENC_SUCCESS) {
+        nvApi_->nvEncUnmapInputResource(encoder_, slot.mappedResource);
+        slot.mappedResource = nullptr;
         return false;
     }
 
@@ -223,6 +241,9 @@ bool NVENCEncoder::EncodeFrame(ID3D11Texture2D* texture, bool forceIDR) {
         }
         nvApi_->nvEncUnlockBitstream(encoder_, slot.bitstreamBuffer);
     }
+
+    nvApi_->nvEncUnmapInputResource(encoder_, slot.mappedResource);
+    slot.mappedResource = nullptr;
 
     currentSlot_ = (currentSlot_ + 1) % kSlotCount;
     return true;

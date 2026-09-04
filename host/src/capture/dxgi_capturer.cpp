@@ -26,16 +26,19 @@ bool DXGICapturer::Initialize() {
     if (FAILED(hr)) return false;
 
     ComPtr<IDXGIDevice> dxgiDevice;
-    device_.As(&dxgiDevice);
+    hr = device_.As(&dxgiDevice);
+    if (FAILED(hr)) return false;
 
     ComPtr<IDXGIAdapter> dxgiAdapter;
-    dxgiDevice->GetAdapter(&dxgiAdapter);
+    hr = dxgiDevice->GetAdapter(&dxgiAdapter);
+    if (FAILED(hr)) return false;
 
     ComPtr<IDXGIOutput> dxgiOutput;
     if (FAILED(dxgiAdapter->EnumOutputs(0, &dxgiOutput))) return false;
 
     ComPtr<IDXGIOutput1> dxgiOutput1;
-    dxgiOutput.As(&dxgiOutput1);
+    hr = dxgiOutput.As(&dxgiOutput1);
+    if (FAILED(hr)) return false;
 
     DXGI_OUTPUT_DESC outDesc;
     dxgiOutput->GetDesc(&outDesc);
@@ -63,11 +66,11 @@ void DXGICapturer::ResendCursorState() {
 }
 
 CaptureStatus DXGICapturer::AcquireFrame(ID3D11Texture2D** outTexture, uint32_t timeoutMs) {
-    if (!duplication_ || !outTexture) return CaptureStatus::Error;
+    if (!duplication_ || !outTexture) return CaptureStatus::AccessLost;
 
     ReleaseFrame();
 
-    DXGI_OUTDUPL_FRAME_INFO frameInfo;
+    DXGI_OUTDUPL_FRAME_INFO frameInfo = {};
     ComPtr<IDXGIResource> desktopResource;
 
     HRESULT hr = duplication_->AcquireNextFrame(timeoutMs, &frameInfo, &desktopResource);
@@ -77,19 +80,15 @@ CaptureStatus DXGICapturer::AcquireFrame(ID3D11Texture2D** outTexture, uint32_t 
         return CaptureStatus::Timeout;
     }
 
-    if (hr == DXGI_ERROR_ACCESS_LOST || hr == DXGI_ERROR_INVALID_CALL) {
-        return CaptureStatus::AccessLost;
-    }
-
     if (FAILED(hr)) {
-        return CaptureStatus::Error;
+        return CaptureStatus::AccessLost;
     }
 
     frameAcquired_ = true;
     hr = desktopResource.As(&currentFrameTexture_);
     if (FAILED(hr)) {
         ReleaseFrame();
-        return CaptureStatus::Error;
+        return CaptureStatus::AccessLost;
     }
 
     ProcessCursor(frameInfo);
@@ -114,7 +113,6 @@ void DXGICapturer::ProcessCursor(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) {
         isShowing = (ci.flags & CURSOR_SHOWING) != 0;
     }
 
-    // Проверяем изменение позиции или глобального статуса видимости игры
     if (frameInfo.LastMouseUpdateTime.QuadPart != 0 || isShowing != (cachedPos_.visible != 0)) {
         cachedPos_.type = MessageType::CursorPosition;
         if (frameInfo.PointerPosition.Visible) {
@@ -138,7 +136,7 @@ void DXGICapturer::ProcessCursor(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) {
         }
 
         UINT requiredSize = 0;
-        DXGI_OUTDUPL_POINTER_SHAPE_INFO shapeInfo;
+        DXGI_OUTDUPL_POINTER_SHAPE_INFO shapeInfo = {};
         HRESULT hr = duplication_->GetFramePointerShape(
             frameInfo.PointerShapeBufferSize,
             shapeBuffer_.data(),
@@ -146,8 +144,8 @@ void DXGICapturer::ProcessCursor(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) {
             &shapeInfo
         );
 
-        if (SUCCEEDED(hr)) {
-            CursorShapeMessage msg;
+        if (SUCCEEDED(hr) && shapeInfo.Width > 0 && shapeInfo.Height > 0 && shapeInfo.Width <= 256 && shapeInfo.Height <= 256) {
+            CursorShapeMessage msg = {};
             msg.type = MessageType::CursorShape;
             msg.width = shapeInfo.Width;
             msg.height = shapeInfo.Height;
@@ -155,51 +153,82 @@ void DXGICapturer::ProcessCursor(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) {
             msg.hotspotY = shapeInfo.HotSpot.y;
 
             if (shapeInfo.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR) {
-                msg.dataSize = shapeInfo.Width * shapeInfo.Height * 4;
-                cachedShape_ = msg;
-                cachedShapeData_.assign(shapeBuffer_.data(), shapeBuffer_.data() + msg.dataSize);
-                hasCachedShape_ = true;
+                size_t expectedSize = static_cast<size_t>(shapeInfo.Width) * shapeInfo.Height * 4;
+                if (requiredSize >= expectedSize && shapeBuffer_.size() >= expectedSize) {
+                    msg.dataSize = static_cast<uint32_t>(expectedSize);
+                    cachedShape_ = msg;
+                    cachedShapeData_.assign(shapeBuffer_.data(), shapeBuffer_.data() + expectedSize);
+                    hasCachedShape_ = true;
 
-                if (cursorShapeCallback_) {
-                    cursorShapeCallback_(msg, shapeBuffer_.data());
+                    if (cursorShapeCallback_) {
+                        cursorShapeCallback_(msg, shapeBuffer_.data());
+                    }
                 }
             } else if (shapeInfo.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME) {
                 UINT actualHeight = shapeInfo.Height / 2;
-                msg.height = actualHeight;
-                msg.dataSize = shapeInfo.Width * actualHeight * 4;
+                if (actualHeight > 0) {
+                    msg.height = actualHeight;
+                    size_t rgbaSize = static_cast<size_t>(shapeInfo.Width) * actualHeight * 4;
+                    msg.dataSize = static_cast<uint32_t>(rgbaSize);
 
-                if (convertedShapeBuffer_.size() < msg.dataSize) {
-                    convertedShapeBuffer_.resize(msg.dataSize);
-                }
+                    if (convertedShapeBuffer_.size() < rgbaSize) {
+                        convertedShapeBuffer_.resize(rgbaSize);
+                    }
 
-                auto* dst = reinterpret_cast<uint32_t*>(convertedShapeBuffer_.data());
-                const uint8_t* andMask = shapeBuffer_.data();
-                const uint8_t* xorMask = shapeBuffer_.data() + (shapeInfo.Pitch * actualHeight);
+                    auto* dst = reinterpret_cast<uint32_t*>(convertedShapeBuffer_.data());
+                    const uint8_t* andMask = shapeBuffer_.data();
+                    const uint8_t* xorMask = shapeBuffer_.data() + (shapeInfo.Pitch * actualHeight);
 
-                for (UINT row = 0; row < actualHeight; ++row) {
-                    for (UINT col = 0; col < shapeInfo.Width; ++col) {
-                        UINT byteIdx = (row * shapeInfo.Pitch) + (col / 8);
-                        UINT bitMask = 0x80 >> (col % 8);
+                    size_t totalNeeded = static_cast<size_t>(shapeInfo.Pitch) * shapeInfo.Height;
+                    if (requiredSize >= totalNeeded && shapeBuffer_.size() >= totalNeeded) {
+                        for (UINT row = 0; row < actualHeight; ++row) {
+                            for (UINT col = 0; col < shapeInfo.Width; ++col) {
+                                UINT byteIdx = (row * shapeInfo.Pitch) + (col / 8);
+                                UINT bitMask = 0x80 >> (col % 8);
 
-                        bool andBit = (andMask[byteIdx] & bitMask) != 0;
-                        bool xorBit = (xorMask[byteIdx] & bitMask) != 0;
+                                bool andBit = (andMask[byteIdx] & bitMask) != 0;
+                                bool xorBit = (xorMask[byteIdx] & bitMask) != 0;
 
-                        if (!andBit && !xorBit) {
-                            dst[row * shapeInfo.Width + col] = 0xFF000000;
-                        } else if (!andBit && xorBit) {
-                            dst[row * shapeInfo.Width + col] = 0xFFFFFFFF;
-                        } else {
-                            dst[row * shapeInfo.Width + col] = 0x00000000;
+                                if (!andBit && !xorBit) {
+                                    dst[row * shapeInfo.Width + col] = 0xFF000000;
+                                } else if (!andBit && xorBit) {
+                                    dst[row * shapeInfo.Width + col] = 0xFFFFFFFF;
+                                } else {
+                                    dst[row * shapeInfo.Width + col] = 0x00000000;
+                                }
+                            }
+                        }
+
+                        cachedShape_ = msg;
+                        cachedShapeData_.assign(convertedShapeBuffer_.data(), convertedShapeBuffer_.data() + rgbaSize);
+                        hasCachedShape_ = true;
+
+                        if (cursorShapeCallback_) {
+                            cursorShapeCallback_(msg, convertedShapeBuffer_.data());
                         }
                     }
                 }
+            } else if (shapeInfo.Type == DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR) {
+                size_t expectedSize = static_cast<size_t>(shapeInfo.Width) * shapeInfo.Height * 4;
+                if (requiredSize >= expectedSize && shapeBuffer_.size() >= expectedSize) {
+                    msg.dataSize = static_cast<uint32_t>(expectedSize);
+                    if (convertedShapeBuffer_.size() < expectedSize) {
+                        convertedShapeBuffer_.resize(expectedSize);
+                    }
+                    auto* src = reinterpret_cast<const uint32_t*>(shapeBuffer_.data());
+                    auto* dst = reinterpret_cast<uint32_t*>(convertedShapeBuffer_.data());
+                    for (size_t i = 0; i < static_cast<size_t>(shapeInfo.Width) * shapeInfo.Height; ++i) {
+                        uint32_t pixel = src[i];
+                        uint32_t alpha = (pixel >> 24) & 0xFF;
+                        dst[i] = (alpha == 0) ? (pixel | 0xFF000000) : 0x00000000;
+                    }
+                    cachedShape_ = msg;
+                    cachedShapeData_.assign(convertedShapeBuffer_.data(), convertedShapeBuffer_.data() + expectedSize);
+                    hasCachedShape_ = true;
 
-                cachedShape_ = msg;
-                cachedShapeData_.assign(convertedShapeBuffer_.data(), convertedShapeBuffer_.data() + msg.dataSize);
-                hasCachedShape_ = true;
-
-                if (cursorShapeCallback_) {
-                    cursorShapeCallback_(msg, convertedShapeBuffer_.data());
+                    if (cursorShapeCallback_) {
+                        cursorShapeCallback_(msg, convertedShapeBuffer_.data());
+                    }
                 }
             }
         }

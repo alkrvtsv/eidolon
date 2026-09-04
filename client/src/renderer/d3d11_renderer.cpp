@@ -1,4 +1,5 @@
 #include "renderer/d3d11_renderer.h"
+#include <dxgi1_2.h>
 #include <iostream>
 
 D3D11Renderer::D3D11Renderer() = default;
@@ -75,6 +76,11 @@ bool D3D11Renderer::CreateDeviceAndSwapChain(HWND hwnd) {
 
     if (FAILED(hr)) return false;
 
+    ComPtr<IDXGIDevice1> dxgiDevice;
+    if (SUCCEEDED(device_.As(&dxgiDevice))) {
+        dxgiDevice->SetMaximumFrameLatency(1);
+    }
+
     device_.As(&videoDevice_);
     context_.As(&videoContext_);
     return true;
@@ -103,15 +109,13 @@ bool D3D11Renderer::CreateVideoProcessor() {
     hr = videoDevice_->CreateVideoProcessor(videoProcessorEnum_.Get(), 0, &videoProcessor_);
     if (FAILED(hr)) return false;
 
-    // Входной поток декодера: NV12 BT.709
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE inColorSpace = {};
     inColorSpace.Usage = 0;
     inColorSpace.RGB_Range = 0;
-    inColorSpace.YCbCr_Matrix = 1; // BT.709
+    inColorSpace.YCbCr_Matrix = 1;
     inColorSpace.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
     videoContext_->VideoProcessorSetStreamColorSpace(videoProcessor_.Get(), 0, &inColorSpace);
 
-    // Выходной поток SwapChain: RGB Full Range (0-255)
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE outColorSpace = {};
     outColorSpace.Usage = 0;
     outColorSpace.RGB_Range = 0;
