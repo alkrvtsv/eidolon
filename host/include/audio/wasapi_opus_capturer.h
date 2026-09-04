@@ -8,6 +8,9 @@
 #include <cstdint>
 #include <functional>
 #include <thread>
+#include <vector>
+
+struct SwrContext;
 
 using Microsoft::WRL::ComPtr;
 
@@ -30,6 +33,7 @@ private:
     ComPtr<IAudioClient> audioClient_;
     ComPtr<IAudioCaptureClient> captureClient_;
     OpusEncoder* opusEncoder_{nullptr};
+    SwrContext* swrCtx_{nullptr};
 
     uint32_t channels_{2};
     uint32_t sampleRate_{48000};

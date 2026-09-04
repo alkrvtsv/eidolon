@@ -40,6 +40,8 @@ public:
     bool IsConnected() const { return connected_; }
 
 private:
+    void ProcessVideoChunk(const uint8_t* data, size_t size);
+
     std::shared_ptr<rtc::PeerConnection> pc_;
     
     std::shared_ptr<rtc::DataChannel> videoChannel_;
@@ -51,6 +53,14 @@ private:
     std::atomic<bool> connected_{false};
     bool hasRemoteDescription_{false};
     std::vector<std::pair<std::string, std::string>> pendingCandidates_;
+
+    uint32_t activeFrameId_{0};
+    uint32_t expectedFrameSize_{0};
+    uint16_t totalChunks_{0};
+    uint16_t receivedChunksCount_{0};
+    bool frameCompleted_{false};
+    std::vector<uint8_t> frameBuffer_;
+    std::vector<bool> receivedChunksMask_;
 
     std::function<void(const std::string&)> signalingSend_;
     std::function<void(const uint8_t* data, size_t size)> videoCallback_;

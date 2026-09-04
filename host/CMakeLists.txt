@@ -1,5 +1,6 @@
 find_package(LibDataChannel CONFIG REQUIRED)
 find_package(Opus CONFIG REQUIRED)
+find_package(ffmpeg REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 
 add_executable(eidolon_host
@@ -16,6 +17,7 @@ add_executable(eidolon_host
 target_include_directories(eidolon_host PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/nvenc/include
+    ${FFMPEG_INCLUDE_DIRS}
 )
 
 target_link_libraries(eidolon_host PRIVATE
@@ -23,6 +25,7 @@ target_link_libraries(eidolon_host PRIVATE
     LibDataChannel::LibDataChannel
     Opus::opus
     nlohmann_json::nlohmann_json
+    ${FFMPEG_LIBRARIES}
     d3d11.lib
     dxgi.lib
     dxguid.lib

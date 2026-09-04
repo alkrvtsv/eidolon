@@ -1,5 +1,6 @@
 #include "network/webrtc_client.h"
 #include <nlohmann/json.hpp>
+#include <cstring>
 #include <iostream>
 
 using json = nlohmann::json;
@@ -40,9 +41,9 @@ bool WebRTCClient::Initialize() {
         if (label == "video") {
             videoChannel_ = dc;
             videoChannel_->onMessage([this](std::variant<rtc::binary, std::string> data) {
-                if (std::holds_alternative<rtc::binary>(data) && videoCallback_) {
+                if (std::holds_alternative<rtc::binary>(data)) {
                     const auto& bin = std::get<rtc::binary>(data);
-                    videoCallback_(reinterpret_cast<const uint8_t*>(bin.data()), bin.size());
+                    ProcessVideoChunk(reinterpret_cast<const uint8_t*>(bin.data()), bin.size());
                 }
             });
         } else if (label == "input") {
@@ -92,10 +93,69 @@ bool WebRTCClient::Initialize() {
     return true;
 }
 
+void WebRTCClient::ProcessVideoChunk(const uint8_t* data, size_t size) {
+    if (!data || size < sizeof(VideoChunkHeader)) return;
+
+    const auto* hdr = reinterpret_cast<const VideoChunkHeader*>(data);
+    const uint8_t* payload = data + sizeof(VideoChunkHeader);
+    const size_t payloadSize = size - sizeof(VideoChunkHeader);
+
+    int32_t diff = static_cast<int32_t>(hdr->frameId - activeFrameId_);
+
+    if (diff > 0) {
+        if (activeFrameId_ != 0 && !frameCompleted_) {
+            RequestIDR();
+        }
+
+        activeFrameId_ = hdr->frameId;
+        expectedFrameSize_ = hdr->frameSize;
+        totalChunks_ = hdr->totalChunks;
+        receivedChunksCount_ = 0;
+        frameCompleted_ = false;
+
+        if (frameBuffer_.size() < expectedFrameSize_) {
+            frameBuffer_.resize(expectedFrameSize_);
+        }
+        receivedChunksMask_.assign(totalChunks_, false);
+    } else if (diff < 0) {
+        return;
+    }
+
+    if (hdr->chunkIndex >= totalChunks_ || frameCompleted_) {
+        return;
+    }
+
+    if (!receivedChunksMask_[hdr->chunkIndex]) {
+        const size_t kMaxPayload = 64 * 1024;
+        size_t offset = static_cast<size_t>(hdr->chunkIndex) * kMaxPayload;
+
+        if (offset + payloadSize <= expectedFrameSize_) {
+            std::memcpy(frameBuffer_.data() + offset, payload, payloadSize);
+            receivedChunksMask_[hdr->chunkIndex] = true;
+            receivedChunksCount_++;
+
+            if (receivedChunksCount_ == totalChunks_) {
+                frameCompleted_ = true;
+                if (videoCallback_) {
+                    videoCallback_(frameBuffer_.data(), expectedFrameSize_);
+                }
+            }
+        }
+    }
+}
+
 void WebRTCClient::Shutdown() noexcept {
     connected_ = false;
     hasRemoteDescription_ = false;
     pendingCandidates_.clear();
+
+    activeFrameId_ = 0;
+    expectedFrameSize_ = 0;
+    totalChunks_ = 0;
+    receivedChunksCount_ = 0;
+    frameCompleted_ = false;
+    frameBuffer_.clear();
+    receivedChunksMask_.clear();
 
     if (videoChannel_) { videoChannel_->close(); videoChannel_.reset(); }
     if (inputChannel_) { inputChannel_->close(); inputChannel_.reset(); }

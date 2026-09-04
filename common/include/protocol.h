@@ -23,8 +23,8 @@ struct MouseRelativeMessage {
 
 struct MouseAbsoluteMessage {
     MessageType type{MessageType::InputMouseAbsolute};
-    uint16_t x{0}; // 0 .. 65535
-    uint16_t y{0}; // 0 .. 65535
+    uint16_t x{0};
+    uint16_t y{0};
 };
 
 struct MouseButtonMessage {
@@ -69,6 +69,13 @@ enum class ControlCommandType : uint8_t {
 struct ControlCommandMessage {
     MessageType type{MessageType::ControlCommand};
     ControlCommandType command{ControlCommandType::RequestIDR};
+};
+
+struct VideoChunkHeader {
+    uint32_t frameId{0};
+    uint32_t frameSize{0};
+    uint16_t chunkIndex{0};
+    uint16_t totalChunks{0};
 };
 
 #pragma pack(pop)

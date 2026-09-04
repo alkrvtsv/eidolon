@@ -1,6 +1,7 @@
 #include "network/webrtc_streamer.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <cstring>
 #include <iostream>
 
 using json = nlohmann::json;
@@ -153,16 +154,25 @@ void WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size) {
     if (!peerConnected_ || !videoChannel_ || !videoChannel_->isOpen() || !data || size == 0) return;
 
     try {
-        const size_t kMaxChunkSize = 64 * 1024;
-        size_t offset = 0;
+        const size_t kMaxPayload = 64 * 1024;
+        const uint16_t totalChunks = static_cast<uint16_t>((size + kMaxPayload - 1) / kMaxPayload);
+        const uint32_t frameId = ++videoFrameId_;
 
-        while (offset < size) {
-            size_t chunkSize = (std::min)(kMaxChunkSize, size - offset);
-            rtc::binary chunk(
-                reinterpret_cast<const std::byte*>(data + offset),
-                reinterpret_cast<const std::byte*>(data + offset + chunkSize)
-            );
-            videoChannel_->send(std::move(chunk));
+        size_t offset = 0;
+        for (uint16_t chunkIndex = 0; chunkIndex < totalChunks; ++chunkIndex) {
+            size_t chunkSize = (std::min)(kMaxPayload, size - offset);
+
+            VideoChunkHeader header;
+            header.frameId = frameId;
+            header.frameSize = static_cast<uint32_t>(size);
+            header.chunkIndex = chunkIndex;
+            header.totalChunks = totalChunks;
+
+            rtc::binary packet(sizeof(VideoChunkHeader) + chunkSize);
+            std::memcpy(packet.data(), &header, sizeof(VideoChunkHeader));
+            std::memcpy(packet.data() + sizeof(VideoChunkHeader), data + offset, chunkSize);
+
+            videoChannel_->send(std::move(packet));
             offset += chunkSize;
         }
     } catch (const std::exception& e) {
@@ -190,9 +200,9 @@ void WebRTCStreamer::SendCursorShape(const CursorShapeMessage& shape, const uint
             cursorPayloadBuffer_.resize(totalSize);
         }
 
-        memcpy(cursorPayloadBuffer_.data(), &shape, sizeof(CursorShapeMessage));
+        std::memcpy(cursorPayloadBuffer_.data(), &shape, sizeof(CursorShapeMessage));
         if (data && shape.dataSize > 0) {
-            memcpy(cursorPayloadBuffer_.data() + sizeof(CursorShapeMessage), data, shape.dataSize);
+            std::memcpy(cursorPayloadBuffer_.data() + sizeof(CursorShapeMessage), data, shape.dataSize);
         }
 
         rtc::binary payload(

@@ -54,6 +54,8 @@ private:
     bool hasRemoteDescription_{false};
     std::vector<std::pair<std::string, std::string>> pendingCandidates_;
 
+    uint32_t videoFrameId_{0};
+
     std::function<void(const std::string&)> signalingSend_;
     std::function<void(const uint8_t* data, size_t size)> inputCallback_;
     std::function<void(ControlCommandType)> controlCallback_;
