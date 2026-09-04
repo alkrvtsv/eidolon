@@ -41,6 +41,7 @@ public:
 
 private:
     void ProcessVideoChunk(const uint8_t* data, size_t size);
+    static bool IsKeyframe(const uint8_t* data, size_t size);
 
     std::shared_ptr<rtc::PeerConnection> pc_;
     
@@ -59,6 +60,7 @@ private:
     uint16_t totalChunks_{0};
     uint16_t receivedChunksCount_{0};
     bool frameCompleted_{false};
+    bool waitingForIDR_{true};
     std::vector<uint8_t> frameBuffer_;
     std::vector<bool> receivedChunksMask_;
 

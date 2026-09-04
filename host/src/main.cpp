@@ -123,7 +123,9 @@ int main() {
             if (sentFrames == 1 || sentFrames % 120 == 0) {
                 std::cout << "[Host Pipeline] Sent Frame #" << sentFrames << " (" << size << " bytes)" << std::endl;
             }
-            streamer.SendVideoFrame(data, size);
+            if (!streamer.SendVideoFrame(data, size)) {
+                forceIDR = true;
+            }
         });
 
         audioCapturer.SetEncodedAudioCallback([&](const uint8_t* data, size_t size) {

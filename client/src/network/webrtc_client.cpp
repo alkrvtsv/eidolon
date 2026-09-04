@@ -93,6 +93,27 @@ bool WebRTCClient::Initialize() {
     return true;
 }
 
+bool WebRTCClient::IsKeyframe(const uint8_t* data, size_t size) {
+    if (!data || size < 5) return false;
+    for (size_t i = 0; i + 4 < size; ++i) {
+        if (data[i] == 0 && data[i + 1] == 0) {
+            size_t nalStart = 0;
+            if (data[i + 2] == 1) {
+                nalStart = i + 3;
+            } else if (data[i + 2] == 0 && data[i + 3] == 1) {
+                nalStart = i + 4;
+            }
+            if (nalStart > 0 && nalStart < size) {
+                uint8_t nalType = data[nalStart] & 0x1F;
+                if (nalType == 5 || nalType == 7) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 void WebRTCClient::ProcessVideoChunk(const uint8_t* data, size_t size) {
     if (!data || size < sizeof(VideoChunkHeader)) return;
 
@@ -103,7 +124,8 @@ void WebRTCClient::ProcessVideoChunk(const uint8_t* data, size_t size) {
     int32_t diff = static_cast<int32_t>(hdr->frameId - activeFrameId_);
 
     if (diff > 0) {
-        if (activeFrameId_ != 0 && !frameCompleted_) {
+        if (activeFrameId_ != 0 && (!frameCompleted_ || diff > 1)) {
+            waitingForIDR_ = true;
             RequestIDR();
         }
 
@@ -136,6 +158,15 @@ void WebRTCClient::ProcessVideoChunk(const uint8_t* data, size_t size) {
 
             if (receivedChunksCount_ == totalChunks_) {
                 frameCompleted_ = true;
+
+                if (waitingForIDR_) {
+                    if (IsKeyframe(frameBuffer_.data(), expectedFrameSize_)) {
+                        waitingForIDR_ = false;
+                    } else {
+                        return;
+                    }
+                }
+
                 if (videoCallback_) {
                     videoCallback_(frameBuffer_.data(), expectedFrameSize_);
                 }
@@ -154,6 +185,7 @@ void WebRTCClient::Shutdown() noexcept {
     totalChunks_ = 0;
     receivedChunksCount_ = 0;
     frameCompleted_ = false;
+    waitingForIDR_ = true;
     frameBuffer_.clear();
     receivedChunksMask_.clear();
 

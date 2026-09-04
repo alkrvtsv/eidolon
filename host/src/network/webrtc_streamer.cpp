@@ -150,10 +150,16 @@ void WebRTCStreamer::ProcessSignalingMessage(const std::string& msg) {
     }
 }
 
-void WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size) {
-    if (!peerConnected_ || !videoChannel_ || !videoChannel_->isOpen() || !data || size == 0) return;
+bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size) {
+    if (!peerConnected_ || !videoChannel_ || !videoChannel_->isOpen() || !data || size == 0) {
+        return false;
+    }
 
     try {
+        if (videoChannel_->bufferedAmount() > 128 * 1024) {
+            return false;
+        }
+
         const size_t kMaxPayload = 64 * 1024;
         const uint16_t totalChunks = static_cast<uint16_t>((size + kMaxPayload - 1) / kMaxPayload);
         const uint32_t frameId = ++videoFrameId_;
@@ -175,9 +181,13 @@ void WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size) {
             videoChannel_->send(std::move(packet));
             offset += chunkSize;
         }
+        return true;
     } catch (const std::exception& e) {
         std::cerr << "[WebRTC Host WARNING] SendVideoFrame: " << e.what() << std::endl;
-    } catch (...) {}
+        return false;
+    } catch (...) {
+        return false;
+    }
 }
 
 void WebRTCStreamer::SendAudioFrame(const uint8_t* data, size_t size) {

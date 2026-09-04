@@ -56,7 +56,7 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     GUID codecGuid = NV_ENC_CODEC_H264_GUID;
     GUID presetGuid = NV_ENC_PRESET_P3_GUID;
 
-    if (nvApi_->nvEncGetEncodePresetConfigEx(encoder_, codecGuid, presetGuid, NV_ENC_TUNING_INFO_HIGH_QUALITY, &presetConfig) != NV_ENC_SUCCESS) {
+    if (nvApi_->nvEncGetEncodePresetConfigEx(encoder_, codecGuid, presetGuid, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &presetConfig) != NV_ENC_SUCCESS) {
         Shutdown();
         return false;
     }
@@ -66,21 +66,23 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     encodeConfig.gopLength = NVENC_INFINITE_GOPLENGTH;
     encodeConfig.frameIntervalP = 1;
 
+    // Жесткое бюджетирование: буфер равен ровно 1 кадру при 60 FPS
+    uint32_t singleFrameBits = config_.bitRate / (config_.frameRateNum ? config_.frameRateNum : 60);
+
     encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
     encodeConfig.rcParams.averageBitRate = config_.bitRate;
-    encodeConfig.rcParams.maxBitRate = config_.maxBitRate;
-    encodeConfig.rcParams.vbvBufferSize = config_.vbvBufferSize;
-    encodeConfig.rcParams.vbvInitialDelay = config_.vbvBufferSize;
+    encodeConfig.rcParams.maxBitRate = config_.bitRate;
+    encodeConfig.rcParams.vbvBufferSize = singleFrameBits;
+    encodeConfig.rcParams.vbvInitialDelay = singleFrameBits;
     encodeConfig.rcParams.zeroReorderDelay = 1;
 
     encodeConfig.rcParams.enableAQ = 1;
-    encodeConfig.rcParams.aqStrength = 8;
-    encodeConfig.rcParams.enableTemporalAQ = 1;
+    encodeConfig.rcParams.aqStrength = 5;
 
     encodeConfig.rcParams.enableMinQP = 1;
     encodeConfig.rcParams.enableMaxQP = 1;
-    encodeConfig.rcParams.minQP = { 6, 6, 6 };
-    encodeConfig.rcParams.maxQP = { 24, 24, 24 };
+    encodeConfig.rcParams.minQP = { 10, 10, 10 };
+    encodeConfig.rcParams.maxQP = { 38, 38, 38 }; // Позволяет сжать кадр поворота без распухания
 
     encodeConfig.encodeCodecConfig.h264Config.enableIntraRefresh = 0;
     encodeConfig.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
@@ -107,7 +109,7 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     initParams.frameRateDen = config_.frameRateDen;
     initParams.enablePTD = 1;
     initParams.encodeConfig = &encodeConfig;
-    initParams.tuningInfo = NV_ENC_TUNING_INFO_HIGH_QUALITY;
+    initParams.tuningInfo = NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY;
 
     if (nvApi_->nvEncInitializeEncoder(encoder_, &initParams) != NV_ENC_SUCCESS) {
         Shutdown();

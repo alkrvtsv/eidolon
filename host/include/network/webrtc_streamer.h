@@ -20,7 +20,7 @@ public:
     void StartSession();
     void ProcessSignalingMessage(const std::string& msg);
     
-    void SendVideoFrame(const uint8_t* data, size_t size);
+    bool SendVideoFrame(const uint8_t* data, size_t size);
     void SendAudioFrame(const uint8_t* data, size_t size);
     void SendCursorShape(const CursorShapeMessage& shape, const uint8_t* data);
     void SendCursorPosition(const CursorPositionMessage& pos);
