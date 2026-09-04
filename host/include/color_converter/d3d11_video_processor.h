@@ -32,7 +32,7 @@ private:
 
     ComPtr<ID3D11Texture2D> outputTextureNV12_;
     ComPtr<ID3D11VideoProcessorOutputView> outputView_;
-    
+
     uint32_t width_{0};
     uint32_t height_{0};
 };

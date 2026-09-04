@@ -5,6 +5,11 @@
 #include <optional>
 #include <cstddef>
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4324)
+#endif
+
 template <typename T, size_t Capacity>
 class SPSCQueue {
 public:
@@ -37,7 +42,7 @@ public:
 
         size_t nextTail = (currentTail + 1) % buffer_.size();
         if (nextTail == currentHead) {
-            return false;
+            return false; 
         }
 
         buffer_[currentTail] = std::move(item);
@@ -67,3 +72,7 @@ private:
     alignas(64) std::atomic<size_t> head_;
     alignas(64) std::atomic<size_t> tail_;
 };
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif

@@ -147,8 +147,7 @@ int main() {
             if (status == CaptureStatus::Success && capturedTexture) {
                 ID3D11Texture2D* nv12 = nullptr;
                 if (converter.Convert(capturedTexture, &nv12)) {
-                    lastValidNV12 = nv12;
-                    nv12->Release();
+                    lastValidNV12.Attach(nv12);
                 }
                 capturedTexture->Release();
                 capturer.ReleaseFrame();
@@ -199,8 +198,8 @@ int main() {
             if (status == CaptureStatus::Success && capturedTexture) {
                 ID3D11Texture2D* nv12Texture = nullptr;
                 if (converter.Convert(capturedTexture, &nv12Texture)) {
-                    lastValidNV12 = nv12Texture;
-                    nv12Texture->Release();
+                    lastValidNV12.Reset();
+                    lastValidNV12.Attach(nv12Texture);
 
                     bool needIDR = forceIDR.exchange(false);
                     encoder.EncodeFrame(lastValidNV12.Get(), needIDR);
