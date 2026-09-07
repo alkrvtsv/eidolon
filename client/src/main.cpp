@@ -11,10 +11,27 @@
 #include <rtc/rtc.hpp>
 #include <iostream>
 #include <string>
+#include <windows.h>
 
 using json = nlohmann::json;
 
+static void EnableHighDPI() {
+    typedef BOOL(WINAPI* PFN_SetProcessDpiAwarenessContext)(HANDLE);
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32) {
+        auto setDpiAwareness = reinterpret_cast<PFN_SetProcessDpiAwarenessContext>(
+            GetProcAddress(user32, "SetProcessDpiAwarenessContext")
+        );
+        if (setDpiAwareness) {
+            setDpiAwareness(reinterpret_cast<HANDLE>(-4)); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        }
+    }
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+}
+
 int main(int argc, char* argv[]) {
+    EnableHighDPI();
+
     rtc::InitLogger(rtc::LogLevel::Warning);
 
     MMCSSScopedTask mmcss(L"Games");
@@ -35,8 +52,19 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
-    uint32_t windowWidth = 1920;
-    uint32_t windowHeight = 1080;
+    SDL_DisplayMode dm = {};
+    uint32_t screenWidth = 1920;
+    uint32_t screenHeight = 1080;
+
+    if (SDL_GetCurrentDisplayMode(0, &dm) == 0) {
+        if (dm.w > 0 && dm.h > 0) {
+            screenWidth = static_cast<uint32_t>(dm.w);
+            screenHeight = static_cast<uint32_t>(dm.h);
+        }
+    }
+
+    uint32_t windowWidth = screenWidth;
+    uint32_t windowHeight = screenHeight;
 
     SDL_Window* window = SDL_CreateWindow(
         "Eidolon Stream Client",
@@ -44,7 +72,7 @@ int main(int argc, char* argv[]) {
         SDL_WINDOWPOS_CENTERED,
         static_cast<int>(windowWidth),
         static_cast<int>(windowHeight),
-        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
+        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI
     );
 
     if (!window) {
@@ -57,6 +85,11 @@ int main(int argc, char* argv[]) {
     SDL_VERSION(&wmInfo.version);
     SDL_GetWindowWMInfo(window, &wmInfo);
     HWND hwnd = wmInfo.info.win.window;
+
+    RECT clientRect = {};
+    GetClientRect(hwnd, &clientRect);
+    windowWidth = clientRect.right - clientRect.left;
+    windowHeight = clientRect.bottom - clientRect.top;
 
     D3D11Renderer renderer;
     if (!renderer.Initialize(hwnd, windowWidth, windowHeight)) {
@@ -82,6 +115,7 @@ int main(int argc, char* argv[]) {
 
     InputHandler inputHandler;
     inputHandler.Initialize(window);
+    inputHandler.SetWindowSize(windowWidth, windowHeight);
 
     WebRTCClient client;
     if (!client.Initialize()) {
@@ -149,8 +183,10 @@ int main(int argc, char* argv[]) {
             if (event.type == SDL_QUIT) {
                 running = false;
             } else if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_RESIZED) {
-                uint32_t w = static_cast<uint32_t>(event.window.data1);
-                uint32_t h = static_cast<uint32_t>(event.window.data2);
+                RECT curRect = {};
+                GetClientRect(hwnd, &curRect);
+                uint32_t w = static_cast<uint32_t>(curRect.right - curRect.left);
+                uint32_t h = static_cast<uint32_t>(curRect.bottom - curRect.top);
                 renderer.Resize(w, h);
                 inputHandler.SetWindowSize(w, h);
             } else {

@@ -347,6 +347,7 @@ public:
 
 #include <functional>
 #include <cstdint>
+#include <unordered_set>
 
 class InputHandler {
 public:
@@ -376,6 +377,8 @@ public:
     void SetMouseCaptured(bool captured);
     bool IsMouseCaptured() const { return mouseCaptured_; }
 
+    void ReleaseAllKeys();
+
 private:
     static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
 
@@ -390,6 +393,8 @@ private:
     std::function<void(const uint8_t*, size_t)> inputCallback_;
 
     SDL_Cursor* currentSdlCursor_{nullptr};
+
+    std::unordered_set<uint16_t> pressedKeys_;
 
     static inline HHOOK keyboardHook_{nullptr};
     static inline InputHandler* instance_{nullptr};
@@ -1047,8 +1052,49 @@ bool InputHandler::Initialize(SDL_Window* window) {
     return true;
 }
 
+void InputHandler::ReleaseAllKeys() {
+    if (!inputCallback_) return;
+
+    for (uint16_t vk : pressedKeys_) {
+        KeyboardMessage msg;
+        msg.type = MessageType::InputKeyboard;
+        msg.vkCode = vk;
+        msg.pressed = 0;
+        inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+    }
+    pressedKeys_.clear();
+
+    static const uint16_t modifiers[] = {
+        VK_LSHIFT, VK_RSHIFT, VK_SHIFT,
+        VK_LCONTROL, VK_RCONTROL, VK_CONTROL,
+        VK_LMENU, VK_RMENU, VK_MENU,
+        VK_LWIN, VK_RWIN
+    };
+
+    for (uint16_t vk : modifiers) {
+        KeyboardMessage msg;
+        msg.type = MessageType::InputKeyboard;
+        msg.vkCode = vk;
+        msg.pressed = 0;
+        inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+    }
+
+    for (uint8_t btn = 1; btn <= 5; ++btn) {
+        MouseButtonMessage msg;
+        msg.type = MessageType::InputMouseButton;
+        msg.button = btn;
+        msg.pressed = 0;
+        inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+    }
+}
+
 void InputHandler::SetMouseCaptured(bool captured) {
     mouseCaptured_ = captured;
+
+    if (!captured) {
+        ReleaseAllKeys();
+    }
+
     if (window_) {
         if (captured) {
             SDL_SetWindowGrab(window_, SDL_TRUE);
@@ -1084,15 +1130,12 @@ void InputHandler::SetMouseCaptured(bool captured) {
 void InputHandler::UpdateCursorPosition(const CursorPositionMessage& pos) {
     bool newVisible = (pos.visible != 0);
 
-    // Переключаем режим SDL ТОЛЬКО когда статус видимости реально изменился (вход в 3D игру)
     if (newVisible != hostCursorVisible_) {
         hostCursorVisible_ = newVisible;
         if (mouseCaptured_ && window_) {
             if (!hostCursorVisible_) {
-                // 3D игра скрыла курсор: захватываем дельты
                 SDL_SetRelativeMouseMode(SDL_TRUE);
             } else {
-                // Курсор снова на экране: возвращаем локальный курсор без скачков
                 SDL_SetRelativeMouseMode(SDL_FALSE);
                 SDL_ShowCursor(SDL_ENABLE);
             }
@@ -1113,7 +1156,9 @@ void InputHandler::UpdateCursorShape(const CursorShapeMessage& shape, const uint
     );
 
     if (surface) {
-        SDL_Cursor* newCursor = SDL_CreateColorCursor(surface, shape.hotspotX, shape.hotspotY);
+        int hotX = std::clamp(shape.hotspotX, 0, static_cast<int32_t>(shape.width - 1));
+        int hotY = std::clamp(shape.hotspotY, 0, static_cast<int32_t>(shape.height - 1));
+        SDL_Cursor* newCursor = SDL_CreateColorCursor(surface, hotX, hotY);
         if (newCursor) {
             SDL_SetCursor(newCursor);
             if (currentSdlCursor_) {
@@ -1131,10 +1176,18 @@ LRESULT CALLBACK InputHandler::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
 
         if (kbd->vkCode == VK_LWIN || kbd->vkCode == VK_RWIN) {
             bool isDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
+            uint16_t vk = static_cast<uint16_t>(kbd->vkCode);
+
+            if (isDown) {
+                instance_->pressedKeys_.insert(vk);
+            } else {
+                instance_->pressedKeys_.erase(vk);
+            }
+
             if (instance_->inputCallback_) {
                 KeyboardMessage msg;
                 msg.type = MessageType::InputKeyboard;
-                msg.vkCode = static_cast<uint16_t>(kbd->vkCode);
+                msg.vkCode = vk;
                 msg.pressed = isDown ? 1 : 0;
                 instance_->inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
             }
@@ -1262,6 +1315,13 @@ static uint16_t SDLScancodeToVK(SDL_Scancode scancode) {
 }
 
 void InputHandler::ProcessEvent(const SDL_Event& event) {
+    if (event.type == SDL_WINDOWEVENT) {
+        if (event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+            ReleaseAllKeys();
+        }
+        return;
+    }
+
     if (event.type == SDL_MOUSEBUTTONDOWN) {
         if (!mouseCaptured_) {
             SetMouseCaptured(true);
@@ -1320,6 +1380,12 @@ void InputHandler::ProcessEvent(const SDL_Event& event) {
         if (mouseCaptured_ && inputCallback_) {
             uint16_t vk = SDLScancodeToVK(event.key.keysym.scancode);
             if (vk != 0) {
+                if (event.type == SDL_KEYDOWN) {
+                    pressedKeys_.insert(vk);
+                } else {
+                    pressedKeys_.erase(vk);
+                }
+
                 KeyboardMessage msg;
                 msg.type = MessageType::InputKeyboard;
                 msg.vkCode = vk;
@@ -3216,6 +3282,7 @@ void DXGICapturer::ProcessCursor(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) {
 
                     size_t totalNeeded = static_cast<size_t>(shapeInfo.Pitch) * shapeInfo.Height;
                     if (requiredSize >= totalNeeded && shapeBuffer_.size() >= totalNeeded) {
+                        bool hasXor = false;
                         for (UINT row = 0; row < actualHeight; ++row) {
                             for (UINT col = 0; col < shapeInfo.Width; ++col) {
                                 UINT byteIdx = (row * shapeInfo.Pitch) + (col / 8);
@@ -3228,8 +3295,44 @@ void DXGICapturer::ProcessCursor(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) {
                                     dst[row * shapeInfo.Width + col] = 0xFF000000;
                                 } else if (!andBit && xorBit) {
                                     dst[row * shapeInfo.Width + col] = 0xFFFFFFFF;
+                                } else if (andBit && xorBit) {
+                                    dst[row * shapeInfo.Width + col] = 0xFFFFFFFF;
+                                    hasXor = true;
                                 } else {
                                     dst[row * shapeInfo.Width + col] = 0x00000000;
+                                }
+                            }
+                        }
+
+                        if (hasXor) {
+                            for (UINT row = 0; row < actualHeight; ++row) {
+                                for (UINT col = 0; col < shapeInfo.Width; ++col) {
+                                    UINT byteIdx = (row * shapeInfo.Pitch) + (col / 8);
+                                    UINT bitMask = 0x80 >> (col % 8);
+                                    bool andBit = (andMask[byteIdx] & bitMask) != 0;
+                                    bool xorBit = (xorMask[byteIdx] & bitMask) != 0;
+
+                                    if (andBit && !xorBit) {
+                                        bool neighborIsXor = false;
+                                        for (int dr = -1; dr <= 1 && !neighborIsXor; ++dr) {
+                                            for (int dc = -1; dc <= 1 && !neighborIsXor; ++dc) {
+                                                if (dr == 0 && dc == 0) continue;
+                                                int nr = static_cast<int>(row) + dr;
+                                                int nc = static_cast<int>(col) + dc;
+                                                if (nr >= 0 && nr < static_cast<int>(actualHeight) &&
+                                                    nc >= 0 && nc < static_cast<int>(shapeInfo.Width)) {
+                                                    UINT nByteIdx = (static_cast<UINT>(nr) * shapeInfo.Pitch) + (static_cast<UINT>(nc) / 8);
+                                                    UINT nBitMask = 0x80 >> (static_cast<UINT>(nc) % 8);
+                                                    if ((andMask[nByteIdx] & nBitMask) && (xorMask[nByteIdx] & nBitMask)) {
+                                                        neighborIsXor = true;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if (neighborIsXor) {
+                                            dst[row * shapeInfo.Width + col] = 0xFF000000;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -3255,7 +3358,13 @@ void DXGICapturer::ProcessCursor(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) {
                     for (size_t i = 0; i < static_cast<size_t>(shapeInfo.Width) * shapeInfo.Height; ++i) {
                         uint32_t pixel = src[i];
                         uint32_t alpha = (pixel >> 24) & 0xFF;
-                        dst[i] = (alpha == 0) ? (pixel | 0xFF000000) : 0x00000000;
+                        if (alpha == 0) {
+                            dst[i] = pixel | 0xFF000000;
+                        } else if ((pixel & 0x00FFFFFF) != 0) {
+                            dst[i] = 0xFFFFFFFF;
+                        } else {
+                            dst[i] = 0x00000000;
+                        }
                     }
                     cachedShape_ = msg;
                     cachedShapeData_.assign(convertedShapeBuffer_.data(), convertedShapeBuffer_.data() + expectedSize);
