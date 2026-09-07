@@ -440,6 +440,9 @@ public:
     bool IsConnected() const { return connected_; }
 
 private:
+    void ProcessVideoChunk(const uint8_t* data, size_t size);
+    static bool IsKeyframe(const uint8_t* data, size_t size);
+
     std::shared_ptr<rtc::PeerConnection> pc_;
     
     std::shared_ptr<rtc::DataChannel> videoChannel_;
@@ -451,6 +454,15 @@ private:
     std::atomic<bool> connected_{false};
     bool hasRemoteDescription_{false};
     std::vector<std::pair<std::string, std::string>> pendingCandidates_;
+
+    uint32_t activeFrameId_{0};
+    uint32_t expectedFrameSize_{0};
+    uint16_t totalChunks_{0};
+    uint16_t receivedChunksCount_{0};
+    bool frameCompleted_{false};
+    bool waitingForIDR_{true};
+    std::vector<uint8_t> frameBuffer_;
+    std::vector<bool> receivedChunksMask_;
 
     std::function<void(const std::string&)> signalingSend_;
     std::function<void(const uint8_t* data, size_t size)> videoCallback_;
@@ -1323,6 +1335,7 @@ void InputHandler::ProcessEvent(const SDL_Event& event) {
 ```
 #include "network/webrtc_client.h"
 #include <nlohmann/json.hpp>
+#include <cstring>
 #include <iostream>
 
 using json = nlohmann::json;
@@ -1363,9 +1376,9 @@ bool WebRTCClient::Initialize() {
         if (label == "video") {
             videoChannel_ = dc;
             videoChannel_->onMessage([this](std::variant<rtc::binary, std::string> data) {
-                if (std::holds_alternative<rtc::binary>(data) && videoCallback_) {
+                if (std::holds_alternative<rtc::binary>(data)) {
                     const auto& bin = std::get<rtc::binary>(data);
-                    videoCallback_(reinterpret_cast<const uint8_t*>(bin.data()), bin.size());
+                    ProcessVideoChunk(reinterpret_cast<const uint8_t*>(bin.data()), bin.size());
                 }
             });
         } else if (label == "input") {
@@ -1415,10 +1428,101 @@ bool WebRTCClient::Initialize() {
     return true;
 }
 
+bool WebRTCClient::IsKeyframe(const uint8_t* data, size_t size) {
+    if (!data || size < 5) return false;
+    for (size_t i = 0; i + 4 < size; ++i) {
+        if (data[i] == 0 && data[i + 1] == 0) {
+            size_t nalStart = 0;
+            if (data[i + 2] == 1) {
+                nalStart = i + 3;
+            } else if (data[i + 2] == 0 && data[i + 3] == 1) {
+                nalStart = i + 4;
+            }
+            if (nalStart > 0 && nalStart < size) {
+                uint8_t nalType = data[nalStart] & 0x1F;
+                if (nalType == 5 || nalType == 7) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+void WebRTCClient::ProcessVideoChunk(const uint8_t* data, size_t size) {
+    if (!data || size < sizeof(VideoChunkHeader)) return;
+
+    const auto* hdr = reinterpret_cast<const VideoChunkHeader*>(data);
+    const uint8_t* payload = data + sizeof(VideoChunkHeader);
+    const size_t payloadSize = size - sizeof(VideoChunkHeader);
+
+    int32_t diff = static_cast<int32_t>(hdr->frameId - activeFrameId_);
+
+    if (diff > 0) {
+        if (activeFrameId_ != 0 && (!frameCompleted_ || diff > 1)) {
+            waitingForIDR_ = true;
+            RequestIDR();
+        }
+
+        activeFrameId_ = hdr->frameId;
+        expectedFrameSize_ = hdr->frameSize;
+        totalChunks_ = hdr->totalChunks;
+        receivedChunksCount_ = 0;
+        frameCompleted_ = false;
+
+        if (frameBuffer_.size() < expectedFrameSize_) {
+            frameBuffer_.resize(expectedFrameSize_);
+        }
+        receivedChunksMask_.assign(totalChunks_, false);
+    } else if (diff < 0) {
+        return;
+    }
+
+    if (hdr->chunkIndex >= totalChunks_ || frameCompleted_) {
+        return;
+    }
+
+    if (!receivedChunksMask_[hdr->chunkIndex]) {
+        const size_t kMaxPayload = 64 * 1024;
+        size_t offset = static_cast<size_t>(hdr->chunkIndex) * kMaxPayload;
+
+        if (offset + payloadSize <= expectedFrameSize_) {
+            std::memcpy(frameBuffer_.data() + offset, payload, payloadSize);
+            receivedChunksMask_[hdr->chunkIndex] = true;
+            receivedChunksCount_++;
+
+            if (receivedChunksCount_ == totalChunks_) {
+                frameCompleted_ = true;
+
+                if (waitingForIDR_) {
+                    if (IsKeyframe(frameBuffer_.data(), expectedFrameSize_)) {
+                        waitingForIDR_ = false;
+                    } else {
+                        return;
+                    }
+                }
+
+                if (videoCallback_) {
+                    videoCallback_(frameBuffer_.data(), expectedFrameSize_);
+                }
+            }
+        }
+    }
+}
+
 void WebRTCClient::Shutdown() noexcept {
     connected_ = false;
     hasRemoteDescription_ = false;
     pendingCandidates_.clear();
+
+    activeFrameId_ = 0;
+    expectedFrameSize_ = 0;
+    totalChunks_ = 0;
+    receivedChunksCount_ = 0;
+    frameCompleted_ = false;
+    waitingForIDR_ = true;
+    frameBuffer_.clear();
+    receivedChunksMask_.clear();
 
     if (videoChannel_) { videoChannel_->close(); videoChannel_.reset(); }
     if (inputChannel_) { inputChannel_->close(); inputChannel_.reset(); }
@@ -1766,8 +1870,8 @@ struct MouseRelativeMessage {
 
 struct MouseAbsoluteMessage {
     MessageType type{MessageType::InputMouseAbsolute};
-    uint16_t x{0}; // 0 .. 65535
-    uint16_t y{0}; // 0 .. 65535
+    uint16_t x{0};
+    uint16_t y{0};
 };
 
 struct MouseButtonMessage {
@@ -1814,6 +1918,13 @@ struct ControlCommandMessage {
     ControlCommandType command{ControlCommandType::RequestIDR};
 };
 
+struct VideoChunkHeader {
+    uint32_t frameId{0};
+    uint32_t frameSize{0};
+    uint16_t chunkIndex{0};
+    uint16_t totalChunks{0};
+};
+
 #pragma pack(pop)
 ```
 
@@ -1825,6 +1936,11 @@ struct ControlCommandMessage {
 #include <vector>
 #include <optional>
 #include <cstddef>
+
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4324)
+#endif
 
 template <typename T, size_t Capacity>
 class SPSCQueue {
@@ -1858,7 +1974,7 @@ public:
 
         size_t nextTail = (currentTail + 1) % buffer_.size();
         if (nextTail == currentHead) {
-            return false;
+            return false; 
         }
 
         buffer_[currentTail] = std::move(item);
@@ -1888,12 +2004,17 @@ private:
     alignas(64) std::atomic<size_t> head_;
     alignas(64) std::atomic<size_t> tail_;
 };
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 ```
 
 24. *host/CMakeLists.txt*
 ```
 find_package(LibDataChannel CONFIG REQUIRED)
 find_package(Opus CONFIG REQUIRED)
+find_package(ffmpeg REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 
 add_executable(eidolon_host
@@ -1910,6 +2031,7 @@ add_executable(eidolon_host
 target_include_directories(eidolon_host PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/nvenc/include
+    ${FFMPEG_INCLUDE_DIRS}
 )
 
 target_link_libraries(eidolon_host PRIVATE
@@ -1917,6 +2039,7 @@ target_link_libraries(eidolon_host PRIVATE
     LibDataChannel::LibDataChannel
     Opus::opus
     nlohmann_json::nlohmann_json
+    ${FFMPEG_LIBRARIES}
     d3d11.lib
     dxgi.lib
     dxguid.lib
@@ -1961,6 +2084,9 @@ public:
 #include <cstdint>
 #include <functional>
 #include <thread>
+#include <vector>
+
+struct SwrContext;
 
 using Microsoft::WRL::ComPtr;
 
@@ -1983,6 +2109,7 @@ private:
     ComPtr<IAudioClient> audioClient_;
     ComPtr<IAudioCaptureClient> captureClient_;
     OpusEncoder* opusEncoder_{nullptr};
+    SwrContext* swrCtx_{nullptr};
 
     uint32_t channels_{2};
     uint32_t sampleRate_{48000};
@@ -2160,7 +2287,7 @@ private:
 
     ComPtr<ID3D11Texture2D> outputTextureNV12_;
     ComPtr<ID3D11VideoProcessorOutputView> outputView_;
-    
+
     uint32_t width_{0};
     uint32_t height_{0};
 };
@@ -2196,9 +2323,10 @@ public:
     uint32_t GetHeight() const override { return config_.height; }
 
 private:
-    static constexpr int kSlotCount = 4;
+    static constexpr int kSlotCount = 3;
 
     struct ResourceSlot {
+        ComPtr<ID3D11Texture2D> inputTexture;
         NV_ENC_REGISTERED_PTR registeredResource{nullptr};
         NV_ENC_INPUT_PTR mappedResource{nullptr};
         NV_ENC_OUTPUT_PTR bitstreamBuffer{nullptr};
@@ -2209,6 +2337,7 @@ private:
     void* encoder_{nullptr};
 
     ComPtr<ID3D11Device> device_;
+    ComPtr<ID3D11DeviceContext> context_;
     EncoderConfig config_{};
     uint64_t frameIndex_{0};
 
@@ -2357,7 +2486,7 @@ public:
     void StartSession();
     void ProcessSignalingMessage(const std::string& msg);
     
-    void SendVideoFrame(const uint8_t* data, size_t size);
+    bool SendVideoFrame(const uint8_t* data, size_t size);
     void SendAudioFrame(const uint8_t* data, size_t size);
     void SendCursorShape(const CursorShapeMessage& shape, const uint8_t* data);
     void SendCursorPosition(const CursorPositionMessage& pos);
@@ -2390,6 +2519,8 @@ private:
     std::atomic<bool> peerConnected_{false};
     bool hasRemoteDescription_{false};
     std::vector<std::pair<std::string, std::string>> pendingCandidates_;
+
+    uint32_t videoFrameId_{0};
 
     std::function<void(const std::string&)> signalingSend_;
     std::function<void(const uint8_t* data, size_t size)> inputCallback_;
@@ -2524,7 +2655,9 @@ int main() {
             if (sentFrames == 1 || sentFrames % 120 == 0) {
                 std::cout << "[Host Pipeline] Sent Frame #" << sentFrames << " (" << size << " bytes)" << std::endl;
             }
-            streamer.SendVideoFrame(data, size);
+            if (!streamer.SendVideoFrame(data, size)) {
+                forceIDR = true;
+            }
         });
 
         audioCapturer.SetEncodedAudioCallback([&](const uint8_t* data, size_t size) {
@@ -2548,8 +2681,7 @@ int main() {
             if (status == CaptureStatus::Success && capturedTexture) {
                 ID3D11Texture2D* nv12 = nullptr;
                 if (converter.Convert(capturedTexture, &nv12)) {
-                    lastValidNV12 = nv12;
-                    nv12->Release();
+                    lastValidNV12.Attach(nv12);
                 }
                 capturedTexture->Release();
                 capturer.ReleaseFrame();
@@ -2600,8 +2732,8 @@ int main() {
             if (status == CaptureStatus::Success && capturedTexture) {
                 ID3D11Texture2D* nv12Texture = nullptr;
                 if (converter.Convert(capturedTexture, &nv12Texture)) {
-                    lastValidNV12 = nv12Texture;
-                    nv12Texture->Release();
+                    lastValidNV12.Reset();
+                    lastValidNV12.Attach(nv12Texture);
 
                     bool needIDR = forceIDR.exchange(false);
                     encoder.EncodeFrame(lastValidNV12.Get(), needIDR);
@@ -2644,6 +2776,16 @@ int main() {
 #include <iostream>
 #include <vector>
 
+#pragma warning(push)
+#pragma warning(disable: 4996)
+extern "C" {
+#include <libswresample/swresample.h>
+#include <libavutil/opt.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/samplefmt.h>
+}
+#pragma warning(pop)
+
 #pragma comment(lib, "winmm.lib")
 
 WasapiOpusCapturer::WasapiOpusCapturer() = default;
@@ -2683,15 +2825,10 @@ bool WasapiOpusCapturer::Initialize() {
         isFloat_ = (mixFormat->wFormatTag == WAVE_FORMAT_IEEE_FLOAT);
     }
 
-    std::cout << "[Host Audio] WASAPI Format: " << sampleRate_ << "Hz, " 
-              << channels_ << " channels, " << bitsPerSample_ << " bits, " 
-              << (isFloat_ ? "Float" : "PCM") << std::endl;
-
-    // Выделяем буфер на 200мс в драйвере для надежности
     hr = audioClient_->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
         AUDCLNT_STREAMFLAGS_LOOPBACK,
-        2000000, 
+        2000000,
         0,
         mixFormat,
         nullptr
@@ -2703,11 +2840,70 @@ bool WasapiOpusCapturer::Initialize() {
     hr = audioClient_->GetService(IID_PPV_ARGS(&captureClient_));
     if (FAILED(hr)) return false;
 
+    AVSampleFormat inSampleFmt = AV_SAMPLE_FMT_FLT;
+    if (!isFloat_) {
+        if (bitsPerSample_ == 16) {
+            inSampleFmt = AV_SAMPLE_FMT_S16;
+        } else if (bitsPerSample_ == 32) {
+            inSampleFmt = AV_SAMPLE_FMT_S32;
+        }
+    }
+
+#if LIBAVUTIL_VERSION_MAJOR >= 57
+    AVChannelLayout inLayout;
+    av_channel_layout_default(&inLayout, static_cast<int>(channels_));
+    AVChannelLayout outLayout = AV_CHANNEL_LAYOUT_STEREO;
+
+    int ret = swr_alloc_set_opts2(
+        &swrCtx_,
+        &outLayout,
+        AV_SAMPLE_FMT_FLT,
+        48000,
+        &inLayout,
+        inSampleFmt,
+        static_cast<int>(sampleRate_),
+        0,
+        nullptr
+    );
+    av_channel_layout_uninit(&inLayout);
+    if (ret < 0 || !swrCtx_) {
+        Shutdown();
+        return false;
+    }
+#else
+    int64_t inLayout = av_get_default_channel_layout(static_cast<int>(channels_));
+    int64_t outLayout = AV_CH_LAYOUT_STEREO;
+
+    swrCtx_ = swr_alloc_set_opts(
+        nullptr,
+        outLayout,
+        AV_SAMPLE_FMT_FLT,
+        48000,
+        inLayout,
+        inSampleFmt,
+        static_cast<int>(sampleRate_),
+        0,
+        nullptr
+    );
+    if (!swrCtx_) {
+        Shutdown();
+        return false;
+    }
+#endif
+
+    if (swr_init(swrCtx_) < 0) {
+        Shutdown();
+        return false;
+    }
+
     int opusError = 0;
     opusEncoder_ = opus_encoder_create(48000, 2, OPUS_APPLICATION_AUDIO, &opusError);
-    if (opusError != OPUS_OK || !opusEncoder_) return false;
+    if (opusError != OPUS_OK || !opusEncoder_) {
+        Shutdown();
+        return false;
+    }
 
-    opus_encoder_ctl(opusEncoder_, OPUS_SET_BITRATE(160000)); // 160 kbps (высокое качество)
+    opus_encoder_ctl(opusEncoder_, OPUS_SET_BITRATE(160000));
     opus_encoder_ctl(opusEncoder_, OPUS_SET_COMPLEXITY(10));
     opus_encoder_ctl(opusEncoder_, OPUS_SET_SIGNAL(OPUS_SIGNAL_MUSIC));
 
@@ -2720,13 +2916,17 @@ void WasapiOpusCapturer::Shutdown() noexcept {
         opus_encoder_destroy(opusEncoder_);
         opusEncoder_ = nullptr;
     }
+    if (swrCtx_) {
+        swr_free(&swrCtx_);
+        swrCtx_ = nullptr;
+    }
     captureClient_.Reset();
     audioClient_.Reset();
 }
 
 bool WasapiOpusCapturer::Start() {
     if (running_.exchange(true)) return true;
-    if (!audioClient_ || !captureClient_ || !opusEncoder_) {
+    if (!audioClient_ || !captureClient_ || !opusEncoder_ || !swrCtx_) {
         running_ = false;
         return false;
     }
@@ -2741,15 +2941,10 @@ bool WasapiOpusCapturer::Start() {
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         timeBeginPeriod(1);
 
-        const int OPUS_FRAME_SIZE = 960; // 20мс @ 48000 Гц Стерео
-        std::vector<float> inputStereoBuffer;
-        std::vector<float> resampled48kBuffer;
-        inputStereoBuffer.reserve(48000);
-        resampled48kBuffer.reserve(48000);
+        const int OPUS_FRAME_SIZE = 960;
+        std::vector<float> pcmBuffer;
+        pcmBuffer.reserve(48000);
         std::vector<uint8_t> opusPacket(4000);
-
-        double resampleRatio = 48000.0 / static_cast<double>(sampleRate_);
-        double resamplePos = 0.0;
 
         while (running_) {
             UINT32 packetLength = 0;
@@ -2769,75 +2964,39 @@ bool WasapiOpusCapturer::Start() {
                 if (FAILED(hrPacket)) break;
 
                 if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
-                    inputStereoBuffer.insert(inputStereoBuffer.end(), numFrames * 2, 0.0f);
-                } else if (data) {
-                    if (isFloat_) {
-                        const float* src = reinterpret_cast<const float*>(data);
-                        for (UINT32 i = 0; i < numFrames; ++i) {
-                            float left = std::clamp(src[i * channels_ + 0], -1.0f, 1.0f);
-                            float right = std::clamp(src[i * channels_ + (channels_ > 1 ? 1 : 0)], -1.0f, 1.0f);
-                            inputStereoBuffer.push_back(left);
-                            inputStereoBuffer.push_back(right);
-                        }
-                    } else if (bitsPerSample_ == 16) {
-                        const int16_t* src = reinterpret_cast<const int16_t*>(data);
-                        for (UINT32 i = 0; i < numFrames; ++i) {
-                            float left = std::clamp(src[i * channels_ + 0] / 32768.0f, -1.0f, 1.0f);
-                            float right = std::clamp(src[i * channels_ + (channels_ > 1 ? 1 : 0)] / 32768.0f, -1.0f, 1.0f);
-                            inputStereoBuffer.push_back(left);
-                            inputStereoBuffer.push_back(right);
-                        }
-                    } else if (bitsPerSample_ == 24) {
-                        const uint8_t* src = data;
-                        for (UINT32 i = 0; i < numFrames; ++i) {
-                            int32_t valL = (src[(i * channels_ + 0) * 3 + 0] << 8) |
-                                           (src[(i * channels_ + 0) * 3 + 1] << 16) |
-                                           (src[(i * channels_ + 0) * 3 + 2] << 24);
-                            int32_t valR = (channels_ > 1) ?
-                                           ((src[(i * channels_ + 1) * 3 + 0] << 8) |
-                                            (src[(i * channels_ + 1) * 3 + 1] << 16) |
-                                            (src[(i * channels_ + 1) * 3 + 2] << 24)) : valL;
-                            inputStereoBuffer.push_back(std::clamp(valL / 2147483648.0f, -1.0f, 1.0f));
-                            inputStereoBuffer.push_back(std::clamp(valR / 2147483648.0f, -1.0f, 1.0f));
+                    int64_t dstSamples = av_rescale_rnd(numFrames, 48000, sampleRate_, AV_ROUND_UP);
+                    pcmBuffer.insert(pcmBuffer.end(), static_cast<size_t>(dstSamples * 2), 0.0f);
+                } else if (data && swrCtx_) {
+                    int maxOutSamples = swr_get_out_samples(swrCtx_, static_cast<int>(numFrames));
+                    if (maxOutSamples > 0) {
+                        std::vector<float> converted(static_cast<size_t>(maxOutSamples * 2));
+                        uint8_t* outData[1] = { reinterpret_cast<uint8_t*>(converted.data()) };
+                        const uint8_t* inData[1] = { data };
+
+                        int convertedSamples = swr_convert(
+                            swrCtx_,
+                            outData,
+                            maxOutSamples,
+                            inData,
+                            static_cast<int>(numFrames)
+                        );
+
+                        if (convertedSamples > 0) {
+                            pcmBuffer.insert(
+                                pcmBuffer.end(),
+                                converted.data(),
+                                converted.data() + (convertedSamples * 2)
+                            );
                         }
                     }
                 }
 
                 captureClient_->ReleaseBuffer(numFrames);
 
-                // Ресемплинг в 48000 Гц
-                if (sampleRate_ == 48000) {
-                    resampled48kBuffer.insert(resampled48kBuffer.end(), inputStereoBuffer.begin(), inputStereoBuffer.end());
-                    inputStereoBuffer.clear();
-                } else {
-                    size_t inFrames = inputStereoBuffer.size() / 2;
-                    while (resamplePos + 1.0 < inFrames) {
-                        size_t idx = static_cast<size_t>(resamplePos);
-                        double frac = resamplePos - idx;
-
-                        float l0 = inputStereoBuffer[idx * 2 + 0];
-                        float r0 = inputStereoBuffer[idx * 2 + 1];
-                        float l1 = inputStereoBuffer[(idx + 1) * 2 + 0];
-                        float r1 = inputStereoBuffer[(idx + 1) * 2 + 1];
-
-                        resampled48kBuffer.push_back(static_cast<float>(l0 + frac * (l1 - l0)));
-                        resampled48kBuffer.push_back(static_cast<float>(r0 + frac * (r1 - r0)));
-
-                        resamplePos += (1.0 / resampleRatio);
-                    }
-
-                    size_t consumed = static_cast<size_t>(resamplePos);
-                    if (consumed > 0 && inFrames > consumed) {
-                        inputStereoBuffer.erase(inputStereoBuffer.begin(), inputStereoBuffer.begin() + (consumed * 2));
-                        resamplePos -= consumed;
-                    }
-                }
-
-                // Кодирование ровными пачками по 960 сэмплов (20 мс)
-                while (resampled48kBuffer.size() >= static_cast<size_t>(OPUS_FRAME_SIZE * 2)) {
+                while (pcmBuffer.size() >= static_cast<size_t>(OPUS_FRAME_SIZE * 2)) {
                     opus_int32 encodedBytes = opus_encode_float(
                         opusEncoder_,
-                        resampled48kBuffer.data(),
+                        pcmBuffer.data(),
                         OPUS_FRAME_SIZE,
                         opusPacket.data(),
                         static_cast<opus_int32>(opusPacket.size())
@@ -2847,7 +3006,7 @@ bool WasapiOpusCapturer::Start() {
                         encodedAudioCallback_(opusPacket.data(), static_cast<size_t>(encodedBytes));
                     }
 
-                    resampled48kBuffer.erase(resampled48kBuffer.begin(), resampled48kBuffer.begin() + (OPUS_FRAME_SIZE * 2));
+                    pcmBuffer.erase(pcmBuffer.begin(), pcmBuffer.begin() + (OPUS_FRAME_SIZE * 2));
                 }
 
                 captureClient_->GetNextPacketSize(&packetLength);
@@ -3206,16 +3365,14 @@ bool D3D11VideoProcessorConverter::InitializeVideoPipeline() {
         return false;
     }
 
-    // Входной поток: RGB Full Range (0..255)
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE inColorSpace = {};
     inColorSpace.Usage = 0;
-    inColorSpace.RGB_Range = 0; // Full Range (0-255)
-    inColorSpace.YCbCr_Matrix = 1; // BT.709
+    inColorSpace.RGB_Range = 0;
+    inColorSpace.YCbCr_Matrix = 1;
     inColorSpace.YCbCr_xvYCC = 0;
     inColorSpace.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
     videoContext_->VideoProcessorSetStreamColorSpace(videoProcessor_.Get(), 0, &inColorSpace);
 
-    // Выходной поток: NV12 BT.709 Full Range
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE outColorSpace = inColorSpace;
     videoContext_->VideoProcessorSetOutputColorSpace(videoProcessor_.Get(), &outColorSpace);
 
@@ -3330,6 +3487,7 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
 
     Shutdown();
     device_ = device;
+    device_->GetImmediateContext(&context_);
     config_ = config;
 
     nvencModule_ = LoadLibraryW(L"nvEncodeAPI64.dll");
@@ -3372,7 +3530,7 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     GUID codecGuid = NV_ENC_CODEC_H264_GUID;
     GUID presetGuid = NV_ENC_PRESET_P3_GUID;
 
-    if (nvApi_->nvEncGetEncodePresetConfigEx(encoder_, codecGuid, presetGuid, NV_ENC_TUNING_INFO_HIGH_QUALITY, &presetConfig) != NV_ENC_SUCCESS) {
+    if (nvApi_->nvEncGetEncodePresetConfigEx(encoder_, codecGuid, presetGuid, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &presetConfig) != NV_ENC_SUCCESS) {
         Shutdown();
         return false;
     }
@@ -3382,21 +3540,23 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     encodeConfig.gopLength = NVENC_INFINITE_GOPLENGTH;
     encodeConfig.frameIntervalP = 1;
 
+    // Жесткое бюджетирование: буфер равен ровно 1 кадру при 60 FPS
+    uint32_t singleFrameBits = config_.bitRate / (config_.frameRateNum ? config_.frameRateNum : 60);
+
     encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
     encodeConfig.rcParams.averageBitRate = config_.bitRate;
-    encodeConfig.rcParams.maxBitRate = config_.maxBitRate;
-    encodeConfig.rcParams.vbvBufferSize = config_.vbvBufferSize;
-    encodeConfig.rcParams.vbvInitialDelay = config_.vbvBufferSize;
+    encodeConfig.rcParams.maxBitRate = config_.bitRate;
+    encodeConfig.rcParams.vbvBufferSize = singleFrameBits;
+    encodeConfig.rcParams.vbvInitialDelay = singleFrameBits;
     encodeConfig.rcParams.zeroReorderDelay = 1;
 
     encodeConfig.rcParams.enableAQ = 1;
-    encodeConfig.rcParams.aqStrength = 8;
-    encodeConfig.rcParams.enableTemporalAQ = 1;
+    encodeConfig.rcParams.aqStrength = 5;
 
     encodeConfig.rcParams.enableMinQP = 1;
     encodeConfig.rcParams.enableMaxQP = 1;
-    encodeConfig.rcParams.minQP = { 6, 6, 6 };
-    encodeConfig.rcParams.maxQP = { 24, 24, 24 };
+    encodeConfig.rcParams.minQP = { 10, 10, 10 };
+    encodeConfig.rcParams.maxQP = { 38, 38, 38 }; // Позволяет сжать кадр поворота без распухания
 
     encodeConfig.encodeCodecConfig.h264Config.enableIntraRefresh = 0;
     encodeConfig.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
@@ -3423,14 +3583,48 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     initParams.frameRateDen = config_.frameRateDen;
     initParams.enablePTD = 1;
     initParams.encodeConfig = &encodeConfig;
-    initParams.tuningInfo = NV_ENC_TUNING_INFO_HIGH_QUALITY;
+    initParams.tuningInfo = NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY;
 
     if (nvApi_->nvEncInitializeEncoder(encoder_, &initParams) != NV_ENC_SUCCESS) {
         Shutdown();
         return false;
     }
 
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width = config_.width;
+    texDesc.Height = config_.height;
+    texDesc.MipLevels = 1;
+    texDesc.ArraySize = 1;
+    texDesc.Format = DXGI_FORMAT_NV12;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.SampleDesc.Quality = 0;
+    texDesc.Usage = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    texDesc.CPUAccessFlags = 0;
+    texDesc.MiscFlags = 0;
+
     for (int i = 0; i < kSlotCount; ++i) {
+        HRESULT hr = device_->CreateTexture2D(&texDesc, nullptr, &slots_[i].inputTexture);
+        if (FAILED(hr)) {
+            Shutdown();
+            return false;
+        }
+
+        NV_ENC_REGISTER_RESOURCE registerResource = {};
+        registerResource.version = NV_ENC_REGISTER_RESOURCE_VER;
+        registerResource.resourceType = NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX;
+        registerResource.resourceToRegister = slots_[i].inputTexture.Get();
+        registerResource.width = config_.width;
+        registerResource.height = config_.height;
+        registerResource.pitch = config_.width;
+        registerResource.bufferFormat = NV_ENC_BUFFER_FORMAT_NV12;
+
+        if (nvApi_->nvEncRegisterResource(encoder_, &registerResource) != NV_ENC_SUCCESS) {
+            Shutdown();
+            return false;
+        }
+        slots_[i].registeredResource = registerResource.registeredResource;
+
         NV_ENC_CREATE_BITSTREAM_BUFFER createBitstream = {};
         createBitstream.version = NV_ENC_CREATE_BITSTREAM_BUFFER_VER;
         if (nvApi_->nvEncCreateBitstreamBuffer(encoder_, &createBitstream) != NV_ENC_SUCCESS) {
@@ -3446,11 +3640,11 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
 void NVENCEncoder::Shutdown() noexcept {
     if (nvApi_ && encoder_) {
         for (auto& slot : slots_) {
+            if (slot.mappedResource) {
+                nvApi_->nvEncUnmapInputResource(encoder_, slot.mappedResource);
+                slot.mappedResource = nullptr;
+            }
             if (slot.registeredResource) {
-                if (slot.mappedResource) {
-                    nvApi_->nvEncUnmapInputResource(encoder_, slot.mappedResource);
-                    slot.mappedResource = nullptr;
-                }
                 nvApi_->nvEncUnregisterResource(encoder_, slot.registeredResource);
                 slot.registeredResource = nullptr;
             }
@@ -3458,6 +3652,7 @@ void NVENCEncoder::Shutdown() noexcept {
                 nvApi_->nvEncDestroyBitstreamBuffer(encoder_, slot.bitstreamBuffer);
                 slot.bitstreamBuffer = nullptr;
             }
+            slot.inputTexture.Reset();
         }
         nvApi_->nvEncDestroyEncoder(encoder_);
         encoder_ = nullptr;
@@ -3468,38 +3663,18 @@ void NVENCEncoder::Shutdown() noexcept {
         nvencModule_ = nullptr;
     }
 
+    context_.Reset();
     device_.Reset();
 }
 
 bool NVENCEncoder::EncodeFrame(ID3D11Texture2D* texture, bool forceIDR) {
-    if (!nvApi_ || !encoder_ || !texture) {
+    if (!nvApi_ || !encoder_ || !texture || !context_) {
         return false;
     }
 
     auto& slot = slots_[currentSlot_];
 
-    if (slot.registeredResource) {
-        if (slot.mappedResource) {
-            nvApi_->nvEncUnmapInputResource(encoder_, slot.mappedResource);
-            slot.mappedResource = nullptr;
-        }
-        nvApi_->nvEncUnregisterResource(encoder_, slot.registeredResource);
-        slot.registeredResource = nullptr;
-    }
-
-    NV_ENC_REGISTER_RESOURCE registerResource = {};
-    registerResource.version = NV_ENC_REGISTER_RESOURCE_VER;
-    registerResource.resourceType = NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX;
-    registerResource.resourceToRegister = texture;
-    registerResource.width = config_.width;
-    registerResource.height = config_.height;
-    registerResource.pitch = config_.width;
-    registerResource.bufferFormat = NV_ENC_BUFFER_FORMAT_NV12;
-
-    if (nvApi_->nvEncRegisterResource(encoder_, &registerResource) != NV_ENC_SUCCESS) {
-        return false;
-    }
-    slot.registeredResource = registerResource.registeredResource;
+    context_->CopyResource(slot.inputTexture.Get(), texture);
 
     NV_ENC_MAP_INPUT_RESOURCE mapInput = {};
     mapInput.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
@@ -3526,6 +3701,8 @@ bool NVENCEncoder::EncodeFrame(ID3D11Texture2D* texture, bool forceIDR) {
 
     NVENCSTATUS status = nvApi_->nvEncEncodePicture(encoder_, &picParams);
     if (status != NV_ENC_SUCCESS) {
+        nvApi_->nvEncUnmapInputResource(encoder_, slot.mappedResource);
+        slot.mappedResource = nullptr;
         return false;
     }
 
@@ -3540,6 +3717,9 @@ bool NVENCEncoder::EncodeFrame(ID3D11Texture2D* texture, bool forceIDR) {
         }
         nvApi_->nvEncUnlockBitstream(encoder_, slot.bitstreamBuffer);
     }
+
+    nvApi_->nvEncUnmapInputResource(encoder_, slot.mappedResource);
+    slot.mappedResource = nullptr;
 
     currentSlot_ = (currentSlot_ + 1) % kSlotCount;
     return true;
@@ -3704,6 +3884,7 @@ void SignalingClient::SendText(const std::string& message) {
 #include "network/webrtc_streamer.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <cstring>
 #include <iostream>
 
 using json = nlohmann::json;
@@ -3852,25 +4033,44 @@ void WebRTCStreamer::ProcessSignalingMessage(const std::string& msg) {
     }
 }
 
-void WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size) {
-    if (!peerConnected_ || !videoChannel_ || !videoChannel_->isOpen() || !data || size == 0) return;
+bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size) {
+    if (!peerConnected_ || !videoChannel_ || !videoChannel_->isOpen() || !data || size == 0) {
+        return false;
+    }
 
     try {
-        const size_t kMaxChunkSize = 64 * 1024;
-        size_t offset = 0;
+        if (videoChannel_->bufferedAmount() > 128 * 1024) {
+            return false;
+        }
 
-        while (offset < size) {
-            size_t chunkSize = (std::min)(kMaxChunkSize, size - offset);
-            rtc::binary chunk(
-                reinterpret_cast<const std::byte*>(data + offset),
-                reinterpret_cast<const std::byte*>(data + offset + chunkSize)
-            );
-            videoChannel_->send(std::move(chunk));
+        const size_t kMaxPayload = 64 * 1024;
+        const uint16_t totalChunks = static_cast<uint16_t>((size + kMaxPayload - 1) / kMaxPayload);
+        const uint32_t frameId = ++videoFrameId_;
+
+        size_t offset = 0;
+        for (uint16_t chunkIndex = 0; chunkIndex < totalChunks; ++chunkIndex) {
+            size_t chunkSize = (std::min)(kMaxPayload, size - offset);
+
+            VideoChunkHeader header;
+            header.frameId = frameId;
+            header.frameSize = static_cast<uint32_t>(size);
+            header.chunkIndex = chunkIndex;
+            header.totalChunks = totalChunks;
+
+            rtc::binary packet(sizeof(VideoChunkHeader) + chunkSize);
+            std::memcpy(packet.data(), &header, sizeof(VideoChunkHeader));
+            std::memcpy(packet.data() + sizeof(VideoChunkHeader), data + offset, chunkSize);
+
+            videoChannel_->send(std::move(packet));
             offset += chunkSize;
         }
+        return true;
     } catch (const std::exception& e) {
         std::cerr << "[WebRTC Host WARNING] SendVideoFrame: " << e.what() << std::endl;
-    } catch (...) {}
+        return false;
+    } catch (...) {
+        return false;
+    }
 }
 
 void WebRTCStreamer::SendAudioFrame(const uint8_t* data, size_t size) {
@@ -3893,9 +4093,9 @@ void WebRTCStreamer::SendCursorShape(const CursorShapeMessage& shape, const uint
             cursorPayloadBuffer_.resize(totalSize);
         }
 
-        memcpy(cursorPayloadBuffer_.data(), &shape, sizeof(CursorShapeMessage));
+        std::memcpy(cursorPayloadBuffer_.data(), &shape, sizeof(CursorShapeMessage));
         if (data && shape.dataSize > 0) {
-            memcpy(cursorPayloadBuffer_.data() + sizeof(CursorShapeMessage), data, shape.dataSize);
+            std::memcpy(cursorPayloadBuffer_.data() + sizeof(CursorShapeMessage), data, shape.dataSize);
         }
 
         rtc::binary payload(

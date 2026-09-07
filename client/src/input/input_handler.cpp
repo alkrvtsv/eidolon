@@ -63,15 +63,12 @@ void InputHandler::SetMouseCaptured(bool captured) {
 void InputHandler::UpdateCursorPosition(const CursorPositionMessage& pos) {
     bool newVisible = (pos.visible != 0);
 
-    // Переключаем режим SDL ТОЛЬКО когда статус видимости реально изменился (вход в 3D игру)
     if (newVisible != hostCursorVisible_) {
         hostCursorVisible_ = newVisible;
         if (mouseCaptured_ && window_) {
             if (!hostCursorVisible_) {
-                // 3D игра скрыла курсор: захватываем дельты
                 SDL_SetRelativeMouseMode(SDL_TRUE);
             } else {
-                // Курсор снова на экране: возвращаем локальный курсор без скачков
                 SDL_SetRelativeMouseMode(SDL_FALSE);
                 SDL_ShowCursor(SDL_ENABLE);
             }
@@ -92,7 +89,9 @@ void InputHandler::UpdateCursorShape(const CursorShapeMessage& shape, const uint
     );
 
     if (surface) {
-        SDL_Cursor* newCursor = SDL_CreateColorCursor(surface, shape.hotspotX, shape.hotspotY);
+        int hotX = std::clamp(shape.hotspotX, 0, static_cast<int32_t>(shape.width - 1));
+        int hotY = std::clamp(shape.hotspotY, 0, static_cast<int32_t>(shape.height - 1));
+        SDL_Cursor* newCursor = SDL_CreateColorCursor(surface, hotX, hotY);
         if (newCursor) {
             SDL_SetCursor(newCursor);
             if (currentSdlCursor_) {

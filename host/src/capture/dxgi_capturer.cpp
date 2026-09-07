@@ -181,6 +181,7 @@ void DXGICapturer::ProcessCursor(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) {
 
                     size_t totalNeeded = static_cast<size_t>(shapeInfo.Pitch) * shapeInfo.Height;
                     if (requiredSize >= totalNeeded && shapeBuffer_.size() >= totalNeeded) {
+                        bool hasXor = false;
                         for (UINT row = 0; row < actualHeight; ++row) {
                             for (UINT col = 0; col < shapeInfo.Width; ++col) {
                                 UINT byteIdx = (row * shapeInfo.Pitch) + (col / 8);
@@ -193,8 +194,44 @@ void DXGICapturer::ProcessCursor(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) {
                                     dst[row * shapeInfo.Width + col] = 0xFF000000;
                                 } else if (!andBit && xorBit) {
                                     dst[row * shapeInfo.Width + col] = 0xFFFFFFFF;
+                                } else if (andBit && xorBit) {
+                                    dst[row * shapeInfo.Width + col] = 0xFFFFFFFF;
+                                    hasXor = true;
                                 } else {
                                     dst[row * shapeInfo.Width + col] = 0x00000000;
+                                }
+                            }
+                        }
+
+                        if (hasXor) {
+                            for (UINT row = 0; row < actualHeight; ++row) {
+                                for (UINT col = 0; col < shapeInfo.Width; ++col) {
+                                    UINT byteIdx = (row * shapeInfo.Pitch) + (col / 8);
+                                    UINT bitMask = 0x80 >> (col % 8);
+                                    bool andBit = (andMask[byteIdx] & bitMask) != 0;
+                                    bool xorBit = (xorMask[byteIdx] & bitMask) != 0;
+
+                                    if (andBit && !xorBit) {
+                                        bool neighborIsXor = false;
+                                        for (int dr = -1; dr <= 1 && !neighborIsXor; ++dr) {
+                                            for (int dc = -1; dc <= 1 && !neighborIsXor; ++dc) {
+                                                if (dr == 0 && dc == 0) continue;
+                                                int nr = static_cast<int>(row) + dr;
+                                                int nc = static_cast<int>(col) + dc;
+                                                if (nr >= 0 && nr < static_cast<int>(actualHeight) &&
+                                                    nc >= 0 && nc < static_cast<int>(shapeInfo.Width)) {
+                                                    UINT nByteIdx = (static_cast<UINT>(nr) * shapeInfo.Pitch) + (static_cast<UINT>(nc) / 8);
+                                                    UINT nBitMask = 0x80 >> (static_cast<UINT>(nc) % 8);
+                                                    if ((andMask[nByteIdx] & nBitMask) && (xorMask[nByteIdx] & nBitMask)) {
+                                                        neighborIsXor = true;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if (neighborIsXor) {
+                                            dst[row * shapeInfo.Width + col] = 0xFF000000;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -220,7 +257,13 @@ void DXGICapturer::ProcessCursor(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) {
                     for (size_t i = 0; i < static_cast<size_t>(shapeInfo.Width) * shapeInfo.Height; ++i) {
                         uint32_t pixel = src[i];
                         uint32_t alpha = (pixel >> 24) & 0xFF;
-                        dst[i] = (alpha == 0) ? (pixel | 0xFF000000) : 0x00000000;
+                        if (alpha == 0) {
+                            dst[i] = pixel | 0xFF000000;
+                        } else if ((pixel & 0x00FFFFFF) != 0) {
+                            dst[i] = 0xFFFFFFFF;
+                        } else {
+                            dst[i] = 0x00000000;
+                        }
                     }
                     cachedShape_ = msg;
                     cachedShapeData_.assign(convertedShapeBuffer_.data(), convertedShapeBuffer_.data() + expectedSize);
