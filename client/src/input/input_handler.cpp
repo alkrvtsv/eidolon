@@ -26,8 +26,49 @@ bool InputHandler::Initialize(SDL_Window* window) {
     return true;
 }
 
+void InputHandler::ReleaseAllKeys() {
+    if (!inputCallback_) return;
+
+    for (uint16_t vk : pressedKeys_) {
+        KeyboardMessage msg;
+        msg.type = MessageType::InputKeyboard;
+        msg.vkCode = vk;
+        msg.pressed = 0;
+        inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+    }
+    pressedKeys_.clear();
+
+    static const uint16_t modifiers[] = {
+        VK_LSHIFT, VK_RSHIFT, VK_SHIFT,
+        VK_LCONTROL, VK_RCONTROL, VK_CONTROL,
+        VK_LMENU, VK_RMENU, VK_MENU,
+        VK_LWIN, VK_RWIN
+    };
+
+    for (uint16_t vk : modifiers) {
+        KeyboardMessage msg;
+        msg.type = MessageType::InputKeyboard;
+        msg.vkCode = vk;
+        msg.pressed = 0;
+        inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+    }
+
+    for (uint8_t btn = 1; btn <= 5; ++btn) {
+        MouseButtonMessage msg;
+        msg.type = MessageType::InputMouseButton;
+        msg.button = btn;
+        msg.pressed = 0;
+        inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
+    }
+}
+
 void InputHandler::SetMouseCaptured(bool captured) {
     mouseCaptured_ = captured;
+
+    if (!captured) {
+        ReleaseAllKeys();
+    }
+
     if (window_) {
         if (captured) {
             SDL_SetWindowGrab(window_, SDL_TRUE);
@@ -109,10 +150,18 @@ LRESULT CALLBACK InputHandler::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
 
         if (kbd->vkCode == VK_LWIN || kbd->vkCode == VK_RWIN) {
             bool isDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
+            uint16_t vk = static_cast<uint16_t>(kbd->vkCode);
+
+            if (isDown) {
+                instance_->pressedKeys_.insert(vk);
+            } else {
+                instance_->pressedKeys_.erase(vk);
+            }
+
             if (instance_->inputCallback_) {
                 KeyboardMessage msg;
                 msg.type = MessageType::InputKeyboard;
-                msg.vkCode = static_cast<uint16_t>(kbd->vkCode);
+                msg.vkCode = vk;
                 msg.pressed = isDown ? 1 : 0;
                 instance_->inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
             }
@@ -240,6 +289,13 @@ static uint16_t SDLScancodeToVK(SDL_Scancode scancode) {
 }
 
 void InputHandler::ProcessEvent(const SDL_Event& event) {
+    if (event.type == SDL_WINDOWEVENT) {
+        if (event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+            ReleaseAllKeys();
+        }
+        return;
+    }
+
     if (event.type == SDL_MOUSEBUTTONDOWN) {
         if (!mouseCaptured_) {
             SetMouseCaptured(true);
@@ -298,6 +354,12 @@ void InputHandler::ProcessEvent(const SDL_Event& event) {
         if (mouseCaptured_ && inputCallback_) {
             uint16_t vk = SDLScancodeToVK(event.key.keysym.scancode);
             if (vk != 0) {
+                if (event.type == SDL_KEYDOWN) {
+                    pressedKeys_.insert(vk);
+                } else {
+                    pressedKeys_.erase(vk);
+                }
+
                 KeyboardMessage msg;
                 msg.type = MessageType::InputKeyboard;
                 msg.vkCode = vk;

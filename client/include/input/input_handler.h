@@ -11,6 +11,7 @@
 
 #include <functional>
 #include <cstdint>
+#include <unordered_set>
 
 class InputHandler {
 public:
@@ -40,6 +41,8 @@ public:
     void SetMouseCaptured(bool captured);
     bool IsMouseCaptured() const { return mouseCaptured_; }
 
+    void ReleaseAllKeys();
+
 private:
     static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
 
@@ -54,6 +57,8 @@ private:
     std::function<void(const uint8_t*, size_t)> inputCallback_;
 
     SDL_Cursor* currentSdlCursor_{nullptr};
+
+    std::unordered_set<uint16_t> pressedKeys_;
 
     static inline HHOOK keyboardHook_{nullptr};
     static inline InputHandler* instance_{nullptr};
