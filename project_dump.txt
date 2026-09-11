@@ -395,6 +395,7 @@ private:
     SDL_Cursor* currentSdlCursor_{nullptr};
 
     std::unordered_set<uint16_t> pressedKeys_;
+    std::unordered_set<uint8_t> pressedMouseButtons_;
 
     static inline HHOOK keyboardHook_{nullptr};
     static inline InputHandler* instance_{nullptr};
@@ -571,10 +572,27 @@ public:
 #include <rtc/rtc.hpp>
 #include <iostream>
 #include <string>
+#include <windows.h>
 
 using json = nlohmann::json;
 
+static void EnableHighDPI() {
+    typedef BOOL(WINAPI* PFN_SetProcessDpiAwarenessContext)(HANDLE);
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32) {
+        auto setDpiAwareness = reinterpret_cast<PFN_SetProcessDpiAwarenessContext>(
+            GetProcAddress(user32, "SetProcessDpiAwarenessContext")
+        );
+        if (setDpiAwareness) {
+            setDpiAwareness(reinterpret_cast<HANDLE>(-4)); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        }
+    }
+    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+}
+
 int main(int argc, char* argv[]) {
+    EnableHighDPI();
+
     rtc::InitLogger(rtc::LogLevel::Warning);
 
     MMCSSScopedTask mmcss(L"Games");
@@ -595,8 +613,19 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
-    uint32_t windowWidth = 1920;
-    uint32_t windowHeight = 1080;
+    SDL_DisplayMode dm = {};
+    uint32_t screenWidth = 1920;
+    uint32_t screenHeight = 1080;
+
+    if (SDL_GetCurrentDisplayMode(0, &dm) == 0) {
+        if (dm.w > 0 && dm.h > 0) {
+            screenWidth = static_cast<uint32_t>(dm.w);
+            screenHeight = static_cast<uint32_t>(dm.h);
+        }
+    }
+
+    uint32_t windowWidth = screenWidth;
+    uint32_t windowHeight = screenHeight;
 
     SDL_Window* window = SDL_CreateWindow(
         "Eidolon Stream Client",
@@ -604,7 +633,7 @@ int main(int argc, char* argv[]) {
         SDL_WINDOWPOS_CENTERED,
         static_cast<int>(windowWidth),
         static_cast<int>(windowHeight),
-        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
+        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI
     );
 
     if (!window) {
@@ -617,6 +646,11 @@ int main(int argc, char* argv[]) {
     SDL_VERSION(&wmInfo.version);
     SDL_GetWindowWMInfo(window, &wmInfo);
     HWND hwnd = wmInfo.info.win.window;
+
+    RECT clientRect = {};
+    GetClientRect(hwnd, &clientRect);
+    windowWidth = clientRect.right - clientRect.left;
+    windowHeight = clientRect.bottom - clientRect.top;
 
     D3D11Renderer renderer;
     if (!renderer.Initialize(hwnd, windowWidth, windowHeight)) {
@@ -642,6 +676,7 @@ int main(int argc, char* argv[]) {
 
     InputHandler inputHandler;
     inputHandler.Initialize(window);
+    inputHandler.SetWindowSize(windowWidth, windowHeight);
 
     WebRTCClient client;
     if (!client.Initialize()) {
@@ -709,8 +744,10 @@ int main(int argc, char* argv[]) {
             if (event.type == SDL_QUIT) {
                 running = false;
             } else if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_RESIZED) {
-                uint32_t w = static_cast<uint32_t>(event.window.data1);
-                uint32_t h = static_cast<uint32_t>(event.window.data2);
+                RECT curRect = {};
+                GetClientRect(hwnd, &curRect);
+                uint32_t w = static_cast<uint32_t>(curRect.right - curRect.left);
+                uint32_t h = static_cast<uint32_t>(curRect.bottom - curRect.top);
                 renderer.Resize(w, h);
                 inputHandler.SetWindowSize(w, h);
             } else {
@@ -1055,6 +1092,7 @@ bool InputHandler::Initialize(SDL_Window* window) {
 void InputHandler::ReleaseAllKeys() {
     if (!inputCallback_) return;
 
+    // Отжимаем строго те клавиши, которые физически удерживает пользователь
     for (uint16_t vk : pressedKeys_) {
         KeyboardMessage msg;
         msg.type = MessageType::InputKeyboard;
@@ -1064,28 +1102,15 @@ void InputHandler::ReleaseAllKeys() {
     }
     pressedKeys_.clear();
 
-    static const uint16_t modifiers[] = {
-        VK_LSHIFT, VK_RSHIFT, VK_SHIFT,
-        VK_LCONTROL, VK_RCONTROL, VK_CONTROL,
-        VK_LMENU, VK_RMENU, VK_MENU,
-        VK_LWIN, VK_RWIN
-    };
-
-    for (uint16_t vk : modifiers) {
-        KeyboardMessage msg;
-        msg.type = MessageType::InputKeyboard;
-        msg.vkCode = vk;
-        msg.pressed = 0;
-        inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
-    }
-
-    for (uint8_t btn = 1; btn <= 5; ++btn) {
+    // Отжимаем строго те кнопки мыши, которые физически были зажаты
+    for (uint8_t btn : pressedMouseButtons_) {
         MouseButtonMessage msg;
         msg.type = MessageType::InputMouseButton;
         msg.button = btn;
         msg.pressed = 0;
         inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
     }
+    pressedMouseButtons_.clear();
 }
 
 void InputHandler::SetMouseCaptured(bool captured) {
@@ -1117,13 +1142,13 @@ void InputHandler::SetMouseCaptured(bool captured) {
         if (!keyboardHook_) {
             keyboardHook_ = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, GetModuleHandleW(nullptr), 0);
         }
-        std::cout << "[Input] Captured (Shift+Escape to release, Dual-Mode Active)" << std::endl;
+        std::cout << "[Input] Captured (Right-Ctrl or Ctrl+Alt+Z to release)" << std::endl;
     } else {
         if (keyboardHook_) {
             UnhookWindowsHookEx(keyboardHook_);
             keyboardHook_ = nullptr;
         }
-        std::cout << "[Input] Released (Click inside window to focus)" << std::endl;
+        std::cout << "[Input] Released (Click inside window to capture)" << std::endl;
     }
 }
 
@@ -1327,6 +1352,8 @@ void InputHandler::ProcessEvent(const SDL_Event& event) {
             SetMouseCaptured(true);
         }
 
+        pressedMouseButtons_.insert(event.button.button);
+
         if (inputCallback_) {
             MouseButtonMessage msg;
             msg.type = MessageType::InputMouseButton;
@@ -1335,6 +1362,8 @@ void InputHandler::ProcessEvent(const SDL_Event& event) {
             inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
         }
     } else if (event.type == SDL_MOUSEBUTTONUP) {
+        pressedMouseButtons_.erase(event.button.button);
+
         if (inputCallback_) {
             MouseButtonMessage msg;
             msg.type = MessageType::InputMouseButton;
@@ -1372,9 +1401,16 @@ void InputHandler::ProcessEvent(const SDL_Event& event) {
             inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
         }
     } else if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
-        if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == SDL_SCANCODE_ESCAPE && (SDL_GetModState() & KMOD_SHIFT)) {
-            SetMouseCaptured(false);
-            return;
+        // Хоткеи освобождения: одиночный Правый Ctrl (Host Key) ИЛИ Ctrl+Alt+Z ИЛИ Ctrl+Shift+M
+        if (event.type == SDL_KEYDOWN) {
+            bool isRightCtrl = (event.key.keysym.scancode == SDL_SCANCODE_RCTRL);
+            bool isCtrlAltZ  = (event.key.keysym.scancode == SDL_SCANCODE_Z && (SDL_GetModState() & KMOD_CTRL) && (SDL_GetModState() & KMOD_ALT));
+            bool isCtrlShiftM = (event.key.keysym.scancode == SDL_SCANCODE_M && (SDL_GetModState() & KMOD_CTRL) && (SDL_GetModState() & KMOD_SHIFT));
+
+            if (isRightCtrl || isCtrlAltZ || isCtrlShiftM) {
+                SetMouseCaptured(false);
+                return; // Полностью глушим хоткей на клиенте, ничего не шлем на хост
+            }
         }
 
         if (mouseCaptured_ && inputCallback_) {

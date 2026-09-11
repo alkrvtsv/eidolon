@@ -26,3 +26,5 @@ Thumbs.db
 vcpkg/
 vcpkg_installed/
 signaling/config/local_*.json
+project_dump.txt
+.bat
