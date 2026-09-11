@@ -23,7 +23,7 @@ static void EnableHighDPI() {
             GetProcAddress(user32, "SetProcessDpiAwarenessContext")
         );
         if (setDpiAwareness) {
-            setDpiAwareness(reinterpret_cast<HANDLE>(-4)); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+            setDpiAwareness(reinterpret_cast<HANDLE>(-4));
         }
     }
     SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");

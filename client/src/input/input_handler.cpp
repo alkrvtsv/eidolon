@@ -29,7 +29,6 @@ bool InputHandler::Initialize(SDL_Window* window) {
 void InputHandler::ReleaseAllKeys() {
     if (!inputCallback_) return;
 
-    // Отжимаем строго те клавиши, которые физически удерживает пользователь
     for (uint16_t vk : pressedKeys_) {
         KeyboardMessage msg;
         msg.type = MessageType::InputKeyboard;
@@ -39,7 +38,6 @@ void InputHandler::ReleaseAllKeys() {
     }
     pressedKeys_.clear();
 
-    // Отжимаем строго те кнопки мыши, которые физически были зажаты
     for (uint8_t btn : pressedMouseButtons_) {
         MouseButtonMessage msg;
         msg.type = MessageType::InputMouseButton;
@@ -338,7 +336,6 @@ void InputHandler::ProcessEvent(const SDL_Event& event) {
             inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
         }
     } else if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
-        // Хоткеи освобождения: одиночный Правый Ctrl (Host Key) ИЛИ Ctrl+Alt+Z ИЛИ Ctrl+Shift+M
         if (event.type == SDL_KEYDOWN) {
             bool isRightCtrl = (event.key.keysym.scancode == SDL_SCANCODE_RCTRL);
             bool isCtrlAltZ  = (event.key.keysym.scancode == SDL_SCANCODE_Z && (SDL_GetModState() & KMOD_CTRL) && (SDL_GetModState() & KMOD_ALT));
@@ -346,7 +343,7 @@ void InputHandler::ProcessEvent(const SDL_Event& event) {
 
             if (isRightCtrl || isCtrlAltZ || isCtrlShiftM) {
                 SetMouseCaptured(false);
-                return; // Полностью глушим хоткей на клиенте, ничего не шлем на хост
+                return;
             }
         }
 

@@ -66,7 +66,6 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     encodeConfig.gopLength = NVENC_INFINITE_GOPLENGTH;
     encodeConfig.frameIntervalP = 1;
 
-    // Жесткое бюджетирование: буфер равен ровно 1 кадру при 60 FPS
     uint32_t singleFrameBits = config_.bitRate / (config_.frameRateNum ? config_.frameRateNum : 60);
 
     encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
@@ -82,7 +81,7 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     encodeConfig.rcParams.enableMinQP = 1;
     encodeConfig.rcParams.enableMaxQP = 1;
     encodeConfig.rcParams.minQP = { 10, 10, 10 };
-    encodeConfig.rcParams.maxQP = { 38, 38, 38 }; // Позволяет сжать кадр поворота без распухания
+    encodeConfig.rcParams.maxQP = { 38, 38, 38 };
 
     encodeConfig.encodeCodecConfig.h264Config.enableIntraRefresh = 0;
     encodeConfig.encodeCodecConfig.h264Config.repeatSPSPPS = 1;

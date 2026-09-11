@@ -26,7 +26,7 @@ bool SDLOpusPlayer::Initialize() {
     desiredSpec.freq = kSampleRate;
     desiredSpec.format = AUDIO_F32SYS;
     desiredSpec.channels = kChannels;
-    desiredSpec.samples = 960; // 20ms буфер SDL
+    desiredSpec.samples = 960;
     desiredSpec.callback = nullptr;
 
     SDL_AudioSpec obtainedSpec = {};
@@ -73,7 +73,6 @@ bool SDLOpusPlayer::DecodeAndPlay(const uint8_t* data, size_t size) {
         return false;
     }
 
-    // Если в очереди скопилось более 100 мс (джиттер сети), очищаем излишек для удержания низкой задержки
     uint32_t currentQueuedBytes = SDL_GetQueuedAudioSize(deviceId_);
     if (currentQueuedBytes > kMaxLatencyBytes) {
         SDL_ClearQueuedAudio(deviceId_);
