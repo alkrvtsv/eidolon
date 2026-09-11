@@ -29,6 +29,7 @@ bool InputHandler::Initialize(SDL_Window* window) {
 void InputHandler::ReleaseAllKeys() {
     if (!inputCallback_) return;
 
+    // Отжимаем строго те клавиши, которые физически удерживает пользователь
     for (uint16_t vk : pressedKeys_) {
         KeyboardMessage msg;
         msg.type = MessageType::InputKeyboard;
@@ -38,28 +39,15 @@ void InputHandler::ReleaseAllKeys() {
     }
     pressedKeys_.clear();
 
-    static const uint16_t modifiers[] = {
-        VK_LSHIFT, VK_RSHIFT, VK_SHIFT,
-        VK_LCONTROL, VK_RCONTROL, VK_CONTROL,
-        VK_LMENU, VK_RMENU, VK_MENU,
-        VK_LWIN, VK_RWIN
-    };
-
-    for (uint16_t vk : modifiers) {
-        KeyboardMessage msg;
-        msg.type = MessageType::InputKeyboard;
-        msg.vkCode = vk;
-        msg.pressed = 0;
-        inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
-    }
-
-    for (uint8_t btn = 1; btn <= 5; ++btn) {
+    // Отжимаем строго те кнопки мыши, которые физически были зажаты
+    for (uint8_t btn : pressedMouseButtons_) {
         MouseButtonMessage msg;
         msg.type = MessageType::InputMouseButton;
         msg.button = btn;
         msg.pressed = 0;
         inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
     }
+    pressedMouseButtons_.clear();
 }
 
 void InputHandler::SetMouseCaptured(bool captured) {
@@ -91,13 +79,13 @@ void InputHandler::SetMouseCaptured(bool captured) {
         if (!keyboardHook_) {
             keyboardHook_ = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, GetModuleHandleW(nullptr), 0);
         }
-        std::cout << "[Input] Captured (Shift+Escape to release, Dual-Mode Active)" << std::endl;
+        std::cout << "[Input] Captured (Right-Ctrl or Ctrl+Alt+Z to release)" << std::endl;
     } else {
         if (keyboardHook_) {
             UnhookWindowsHookEx(keyboardHook_);
             keyboardHook_ = nullptr;
         }
-        std::cout << "[Input] Released (Click inside window to focus)" << std::endl;
+        std::cout << "[Input] Released (Click inside window to capture)" << std::endl;
     }
 }
 
@@ -301,6 +289,8 @@ void InputHandler::ProcessEvent(const SDL_Event& event) {
             SetMouseCaptured(true);
         }
 
+        pressedMouseButtons_.insert(event.button.button);
+
         if (inputCallback_) {
             MouseButtonMessage msg;
             msg.type = MessageType::InputMouseButton;
@@ -309,6 +299,8 @@ void InputHandler::ProcessEvent(const SDL_Event& event) {
             inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
         }
     } else if (event.type == SDL_MOUSEBUTTONUP) {
+        pressedMouseButtons_.erase(event.button.button);
+
         if (inputCallback_) {
             MouseButtonMessage msg;
             msg.type = MessageType::InputMouseButton;
@@ -346,9 +338,16 @@ void InputHandler::ProcessEvent(const SDL_Event& event) {
             inputCallback_(reinterpret_cast<const uint8_t*>(&msg), sizeof(msg));
         }
     } else if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
-        if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == SDL_SCANCODE_ESCAPE && (SDL_GetModState() & KMOD_SHIFT)) {
-            SetMouseCaptured(false);
-            return;
+        // Хоткеи освобождения: одиночный Правый Ctrl (Host Key) ИЛИ Ctrl+Alt+Z ИЛИ Ctrl+Shift+M
+        if (event.type == SDL_KEYDOWN) {
+            bool isRightCtrl = (event.key.keysym.scancode == SDL_SCANCODE_RCTRL);
+            bool isCtrlAltZ  = (event.key.keysym.scancode == SDL_SCANCODE_Z && (SDL_GetModState() & KMOD_CTRL) && (SDL_GetModState() & KMOD_ALT));
+            bool isCtrlShiftM = (event.key.keysym.scancode == SDL_SCANCODE_M && (SDL_GetModState() & KMOD_CTRL) && (SDL_GetModState() & KMOD_SHIFT));
+
+            if (isRightCtrl || isCtrlAltZ || isCtrlShiftM) {
+                SetMouseCaptured(false);
+                return; // Полностью глушим хоткей на клиенте, ничего не шлем на хост
+            }
         }
 
         if (mouseCaptured_ && inputCallback_) {

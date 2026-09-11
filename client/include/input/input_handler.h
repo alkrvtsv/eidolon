@@ -59,6 +59,7 @@ private:
     SDL_Cursor* currentSdlCursor_{nullptr};
 
     std::unordered_set<uint16_t> pressedKeys_;
+    std::unordered_set<uint8_t> pressedMouseButtons_;
 
     static inline HHOOK keyboardHook_{nullptr};
     static inline InputHandler* instance_{nullptr};
