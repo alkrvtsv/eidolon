@@ -1,5 +1,6 @@
 #include "protocol.h"
 #include "mmcss.h"
+#include "spsc_queue.h"
 #include "decoder/ffmpeg_d3d11va_decoder.h"
 #include "renderer/d3d11_renderer.h"
 #include "audio/sdl_opus_player.h"
@@ -11,9 +12,16 @@
 #include <rtc/rtc.hpp>
 #include <iostream>
 #include <string>
+#include <vector>
+#include <thread>
+#include <atomic>
 #include <windows.h>
 
 using json = nlohmann::json;
+
+struct EncodedVideoPacket {
+    std::vector<uint8_t> data;
+};
 
 static void EnableHighDPI() {
     typedef BOOL(WINAPI* PFN_SetProcessDpiAwarenessContext)(HANDLE);
@@ -33,9 +41,6 @@ int main(int argc, char* argv[]) {
     EnableHighDPI();
 
     rtc::InitLogger(rtc::LogLevel::Warning);
-
-    MMCSSScopedTask mmcss(L"Games");
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 
     std::string signalingUrl = "ws://192.168.1.13:8080";
     if (argc > 1) {
@@ -127,12 +132,50 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
+    decoder.SetFrameCallback([&](const DecodedFrame& frame) {
+        inputHandler.SetHostResolution(frame.width, frame.height);
+        renderer.RenderFrame(frame);
+    });
+
+    SPSCQueue<EncodedVideoPacket, 32> videoQueue;
+    HANDLE videoEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    std::atomic<bool> renderRunning{true};
+    std::atomic<bool> pendingResize{false};
+    std::atomic<uint32_t> targetWidth{windowWidth};
+    std::atomic<uint32_t> targetHeight{windowHeight};
+
+    std::thread renderThread([&]() {
+        MMCSSScopedTask mmcss(L"Games");
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
+        while (renderRunning.load(std::memory_order_relaxed)) {
+            if (pendingResize.exchange(false)) {
+                renderer.Resize(targetWidth.load(), targetHeight.load());
+            }
+
+            EncodedVideoPacket pkt;
+            bool popped = false;
+            while (videoQueue.Pop(pkt)) {
+                popped = true;
+                decoder.Decode(pkt.data.data(), pkt.data.size());
+            }
+
+            if (!popped) {
+                WaitForSingleObject(videoEvent, 10);
+            }
+        }
+    });
+
     inputHandler.SetInputCallback([&](const uint8_t* data, size_t size) {
         client.SendInputData(data, size);
     });
 
     client.SetVideoCallback([&](const uint8_t* data, size_t size) {
-        decoder.Decode(data, size);
+        EncodedVideoPacket pkt;
+        pkt.data.assign(data, data + size);
+        if (videoQueue.Push(std::move(pkt))) {
+            SetEvent(videoEvent);
+        }
     });
 
     client.SetAudioCallback([&](const uint8_t* data, size_t size) {
@@ -145,11 +188,6 @@ int main(int argc, char* argv[]) {
 
     client.SetCursorPositionCallback([&](const CursorPositionMessage& pos) {
         inputHandler.UpdateCursorPosition(pos);
-    });
-
-    decoder.SetFrameCallback([&](const DecodedFrame& frame) {
-        inputHandler.SetHostResolution(frame.width, frame.height);
-        renderer.RenderFrame(frame);
     });
 
     rtc::WebSocket ws;
@@ -187,13 +225,26 @@ int main(int argc, char* argv[]) {
                 GetClientRect(hwnd, &curRect);
                 uint32_t w = static_cast<uint32_t>(curRect.right - curRect.left);
                 uint32_t h = static_cast<uint32_t>(curRect.bottom - curRect.top);
-                renderer.Resize(w, h);
                 inputHandler.SetWindowSize(w, h);
+                targetWidth.store(w);
+                targetHeight.store(h);
+                pendingResize.store(true);
+                SetEvent(videoEvent);
             } else {
                 inputHandler.ProcessEvent(event);
             }
         }
         SDL_Delay(1);
+    }
+
+    renderRunning.store(false);
+    SetEvent(videoEvent);
+    if (renderThread.joinable()) {
+        renderThread.join();
+    }
+
+    if (videoEvent) {
+        CloseHandle(videoEvent);
     }
 
     ws.close();
