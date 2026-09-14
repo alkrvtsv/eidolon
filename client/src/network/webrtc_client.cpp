@@ -125,7 +125,6 @@ void WebRTCClient::ProcessVideoChunk(const uint8_t* data, size_t size) {
 
     if (diff > 0) {
         if (activeFrameId_ != 0 && (!frameCompleted_ || diff > 1)) {
-            waitingForIDR_ = true;
             RequestIDR();
         }
 

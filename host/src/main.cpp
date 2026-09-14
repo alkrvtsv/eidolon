@@ -51,7 +51,9 @@ int main() {
         encConfig.bitRate = 35'000'000;
         encConfig.maxBitRate = 45'000'000;
         encConfig.vbvBufferSize = 2'500'000;
-        encConfig.enableIntraRefresh = false;
+        encConfig.enableIntraRefresh = true;
+        encConfig.intraRefreshPeriod = 60;
+        encConfig.intraRefreshDuration = 10;
 
         NVENCEncoder encoder;
         if (!encoder.Initialize(capturer.GetDevice(), encConfig)) {
@@ -87,11 +89,18 @@ int main() {
         });
 
         std::atomic<bool> forceIDR{true};
+        auto lastIdrRequestTime = std::chrono::steady_clock::now();
+
         streamer.SetControlCallback([&](ControlCommandType cmd) {
             if (cmd == ControlCommandType::RequestIDR) {
-                std::cout << "[Host] IDR Keyframe & Cursor resend requested" << std::endl;
-                forceIDR = true;
-                capturer.ResendCursorState();
+                auto now = std::chrono::steady_clock::now();
+                auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastIdrRequestTime).count();
+                if (elapsedMs >= 500) {
+                    std::cout << "[Host] IDR Keyframe & Cursor resend requested" << std::endl;
+                    forceIDR.store(true);
+                    capturer.ResendCursorState();
+                    lastIdrRequestTime = now;
+                }
             }
         });
 
@@ -188,6 +197,9 @@ int main() {
 
                 encConfig.width = capturer.GetWidth();
                 encConfig.height = capturer.GetHeight();
+                encConfig.enableIntraRefresh = true;
+                encConfig.intraRefreshPeriod = 60;
+                encConfig.intraRefreshDuration = 10;
                 encoder.Shutdown();
                 encoder.Initialize(capturer.GetDevice(), encConfig);
 

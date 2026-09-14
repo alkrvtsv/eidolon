@@ -83,7 +83,11 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     encodeConfig.rcParams.minQP = { 10, 10, 10 };
     encodeConfig.rcParams.maxQP = { 38, 38, 38 };
 
-    encodeConfig.encodeCodecConfig.h264Config.enableIntraRefresh = 0;
+    encodeConfig.encodeCodecConfig.h264Config.enableIntraRefresh = config_.enableIntraRefresh ? 1 : 0;
+    if (config_.enableIntraRefresh) {
+        encodeConfig.encodeCodecConfig.h264Config.intraRefreshPeriod = config_.intraRefreshPeriod;
+        encodeConfig.encodeCodecConfig.h264Config.intraRefreshCnt = config_.intraRefreshDuration;
+    }
     encodeConfig.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
     encodeConfig.encodeCodecConfig.h264Config.idrPeriod = NVENC_INFINITE_GOPLENGTH;
     encodeConfig.encodeCodecConfig.h264Config.sliceMode = 0;
