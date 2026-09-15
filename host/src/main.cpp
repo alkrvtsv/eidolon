@@ -95,8 +95,7 @@ int main() {
             if (cmd == ControlCommandType::RequestIDR) {
                 auto now = std::chrono::steady_clock::now();
                 auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastIdrRequestTime).count();
-                if (elapsedMs >= 500) {
-                    std::cout << "[Host] IDR Keyframe & Cursor resend requested" << std::endl;
+                if (elapsedMs >= 200) {
                     forceIDR.store(true);
                     capturer.ResendCursorState();
                     lastIdrRequestTime = now;
@@ -176,11 +175,28 @@ int main() {
         audioCapturer.Start();
         std::cout << "[Host] Pipeline ready and running..." << std::endl;
 
-        auto lastFrameTime = std::chrono::steady_clock::now();
+        constexpr auto kTargetInterval = std::chrono::microseconds(16666);
+        auto nextFrameTime = std::chrono::steady_clock::now();
 
         while (true) {
+            auto now = std::chrono::steady_clock::now();
+            if (now < nextFrameTime) {
+                auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(nextFrameTime - now);
+                if (remaining.count() > 2000) {
+                    std::this_thread::sleep_for(std::chrono::microseconds(remaining.count() - 1500));
+                }
+                while (std::chrono::steady_clock::now() < nextFrameTime) {
+                    std::this_thread::yield();
+                }
+            }
+
+            nextFrameTime += kTargetInterval;
+            if (std::chrono::steady_clock::now() > nextFrameTime + kTargetInterval) {
+                nextFrameTime = std::chrono::steady_clock::now() + kTargetInterval;
+            }
+
             ID3D11Texture2D* capturedTexture = nullptr;
-            CaptureStatus status = capturer.AcquireFrame(&capturedTexture, 8);
+            CaptureStatus status = capturer.AcquireFrame(&capturedTexture, 0);
 
             if (status == CaptureStatus::AccessLost || status == CaptureStatus::Error) {
                 std::cout << "[Host WARNING] DXGI Access Lost -> Reinitializing pipeline..." << std::endl;
@@ -207,29 +223,19 @@ int main() {
                 continue;
             }
 
-            auto now = std::chrono::steady_clock::now();
-
             if (status == CaptureStatus::Success && capturedTexture) {
                 ID3D11Texture2D* nv12Texture = nullptr;
                 if (converter.Convert(capturedTexture, &nv12Texture)) {
                     lastValidNV12.Reset();
                     lastValidNV12.Attach(nv12Texture);
-
-                    bool needIDR = forceIDR.exchange(false);
-                    encoder.EncodeFrame(lastValidNV12.Get(), needIDR);
-                    lastFrameTime = now;
                 }
                 capturedTexture->Release();
                 capturer.ReleaseFrame();
-            } else {
-                auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFrameTime).count();
-                if (lastValidNV12 && (forceIDR.load() || elapsedMs >= 16)) {
-                    bool needIDR = forceIDR.exchange(false);
-                    encoder.EncodeFrame(lastValidNV12.Get(), needIDR);
-                    lastFrameTime = now;
-                } else {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                }
+            }
+
+            if (lastValidNV12) {
+                bool needIDR = forceIDR.exchange(false);
+                encoder.EncodeFrame(lastValidNV12.Get(), needIDR);
             }
         }
 

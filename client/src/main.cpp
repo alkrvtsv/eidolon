@@ -11,10 +11,13 @@
 #include <nlohmann/json.hpp>
 #include <rtc/rtc.hpp>
 #include <iostream>
+#include <fstream>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <chrono>
 #include <windows.h>
 
 using json = nlohmann::json;
@@ -132,15 +135,50 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
+    PerformanceMetrics metrics;
+    metrics.clientWidth = windowWidth;
+    metrics.clientHeight = windowHeight;
+
+    std::atomic<bool> isLogging{false};
+    std::mutex logMutex;
+    std::ofstream logFile;
+    uint64_t loggedFrameIndex = 0;
+
+    std::chrono::high_resolution_clock::time_point decodeStartTime;
+
     decoder.SetFrameCallback([&](const DecodedFrame& frame) {
+        auto decodeEndTime = std::chrono::high_resolution_clock::now();
+        metrics.decodeTimeMs = std::chrono::duration<float, std::milli>(decodeEndTime - decodeStartTime).count();
+
         inputHandler.SetHostResolution(frame.width, frame.height);
-        renderer.RenderFrame(frame);
+        metrics.hostWidth = frame.width;
+        metrics.hostHeight = frame.height;
+
+        auto t0 = std::chrono::high_resolution_clock::now();
+        renderer.RenderFrame(frame, metrics);
+        auto t1 = std::chrono::high_resolution_clock::now();
+        metrics.renderTimeMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
+
+        if (isLogging.load(std::memory_order_relaxed)) {
+            std::lock_guard<std::mutex> lock(logMutex);
+            if (logFile.is_open()) {
+                loggedFrameIndex++;
+                logFile << loggedFrameIndex << ","
+                        << metrics.decodeTimeMs << ","
+                        << metrics.bltTimeMs << ","
+                        << metrics.presentTimeMs << ","
+                        << metrics.renderTimeMs << ","
+                        << metrics.videoQueueSize << "\n";
+            }
+        }
     });
 
     SPSCQueue<EncodedVideoPacket, 32> videoQueue;
+    std::atomic<size_t> videoQueueSize{0};
     HANDLE videoEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     std::atomic<bool> renderRunning{true};
     std::atomic<bool> pendingResize{false};
+    std::atomic<bool> toggleHudRequested{false};
     std::atomic<uint32_t> targetWidth{windowWidth};
     std::atomic<uint32_t> targetHeight{windowHeight};
 
@@ -148,16 +186,43 @@ int main(int argc, char* argv[]) {
         MMCSSScopedTask mmcss(L"Games");
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 
+        uint32_t frameCount = 0;
+        auto lastFpsTime = std::chrono::steady_clock::now();
+
         while (renderRunning.load(std::memory_order_relaxed)) {
             if (pendingResize.exchange(false)) {
-                renderer.Resize(targetWidth.load(), targetHeight.load());
+                uint32_t w = targetWidth.load();
+                uint32_t h = targetHeight.load();
+                renderer.Resize(w, h);
+                metrics.clientWidth = w;
+                metrics.clientHeight = h;
+            }
+
+            if (toggleHudRequested.exchange(false)) {
+                renderer.ToggleHUD();
             }
 
             EncodedVideoPacket pkt;
             bool popped = false;
             while (videoQueue.Pop(pkt)) {
                 popped = true;
+                if (videoQueueSize.load(std::memory_order_relaxed) > 0) {
+                    videoQueueSize.fetch_sub(1, std::memory_order_relaxed);
+                }
+                metrics.videoQueueSize = videoQueueSize.load(std::memory_order_relaxed);
+
+                decodeStartTime = std::chrono::high_resolution_clock::now();
                 decoder.Decode(pkt.data.data(), pkt.data.size());
+
+                frameCount++;
+            }
+
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFpsTime).count();
+            if (elapsed >= 1000) {
+                metrics.fps = (frameCount * 1000.0f) / static_cast<float>(elapsed);
+                frameCount = 0;
+                lastFpsTime = now;
             }
 
             if (!popped) {
@@ -174,6 +239,7 @@ int main(int argc, char* argv[]) {
         EncodedVideoPacket pkt;
         pkt.data.assign(data, data + size);
         if (videoQueue.Push(std::move(pkt))) {
+            videoQueueSize.fetch_add(1, std::memory_order_relaxed);
             SetEvent(videoEvent);
         }
     });
@@ -220,6 +286,34 @@ int main(int argc, char* argv[]) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = false;
+            } else if (event.type == SDL_KEYDOWN) {
+                bool isCtrl = (SDL_GetModState() & KMOD_CTRL) != 0;
+                bool isShift = (SDL_GetModState() & KMOD_SHIFT) != 0;
+
+                if (isCtrl && isShift && event.key.keysym.scancode == SDL_SCANCODE_H) {
+                    toggleHudRequested.store(true);
+                    SetEvent(videoEvent);
+                } else if (isCtrl && isShift && event.key.keysym.scancode == SDL_SCANCODE_L) {
+                    if (!isLogging.load()) {
+                        std::lock_guard<std::mutex> lock(logMutex);
+                        logFile.open("perf_log.csv", std::ios::out | std::ios::trunc);
+                        if (logFile.is_open()) {
+                            logFile << "frame_index,decode_ms,blt_ms,present_ms,render_ms,queue_size\n";
+                            loggedFrameIndex = 0;
+                            isLogging.store(true);
+                            std::cout << "[Client] Started CSV logging to perf_log.csv" << std::endl;
+                        }
+                    } else {
+                        isLogging.store(false);
+                        std::lock_guard<std::mutex> lock(logMutex);
+                        if (logFile.is_open()) {
+                            logFile.close();
+                            std::cout << "[Client] Stopped CSV logging. Saved to perf_log.csv" << std::endl;
+                        }
+                    }
+                } else {
+                    inputHandler.ProcessEvent(event);
+                }
             } else if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_RESIZED) {
                 RECT curRect = {};
                 GetClientRect(hwnd, &curRect);
@@ -241,6 +335,14 @@ int main(int argc, char* argv[]) {
     SetEvent(videoEvent);
     if (renderThread.joinable()) {
         renderThread.join();
+    }
+
+    if (isLogging.load()) {
+        isLogging.store(false);
+        std::lock_guard<std::mutex> lock(logMutex);
+        if (logFile.is_open()) {
+            logFile.close();
+        }
     }
 
     if (videoEvent) {

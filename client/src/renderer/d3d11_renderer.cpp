@@ -1,6 +1,298 @@
 #include "renderer/d3d11_renderer.h"
 #include <dxgi1_2.h>
 #include <iostream>
+#include <sstream>
+#include <iomanip>
+#include <algorithm>
+
+#pragma comment(lib, "d2d1.lib")
+#pragma comment(lib, "dwrite.lib")
+
+PerformanceHUD::PerformanceHUD() {
+    lastTextUpdateTime_ = std::chrono::steady_clock::now();
+    lastPeakResetTime_ = std::chrono::steady_clock::now();
+    renderHistory_.fill(0.0f);
+    presentHistory_.fill(0.0f);
+}
+
+PerformanceHUD::~PerformanceHUD() noexcept {
+    Shutdown();
+}
+
+bool PerformanceHUD::Initialize(IDXGISwapChain* swapChain) {
+    Shutdown();
+    swapChain_ = swapChain;
+
+    HRESULT hr = D2D1CreateFactory(
+        D2D1_FACTORY_TYPE_SINGLE_THREADED,
+        __uuidof(ID2D1Factory),
+        nullptr,
+        reinterpret_cast<void**>(d2dFactory_.GetAddressOf())
+    );
+    if (FAILED(hr)) return false;
+
+    D2D1_STROKE_STYLE_PROPERTIES strokeProps = D2D1::StrokeStyleProperties(
+        D2D1_CAP_STYLE_FLAT,
+        D2D1_CAP_STYLE_FLAT,
+        D2D1_CAP_STYLE_FLAT,
+        D2D1_LINE_JOIN_MITER,
+        10.0f,
+        D2D1_DASH_STYLE_DASH,
+        0.0f
+    );
+    hr = d2dFactory_->CreateStrokeStyle(strokeProps, nullptr, 0, &dashedStrokeStyle_);
+    if (FAILED(hr)) return false;
+
+    hr = DWriteCreateFactory(
+        DWRITE_FACTORY_TYPE_SHARED,
+        __uuidof(IDWriteFactory),
+        reinterpret_cast<IUnknown**>(dwriteFactory_.GetAddressOf())
+    );
+    if (FAILED(hr)) return false;
+
+    hr = dwriteFactory_->CreateTextFormat(
+        L"Consolas",
+        nullptr,
+        DWRITE_FONT_WEIGHT_BOLD,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        13.0f,
+        L"en-us",
+        &textFormat_
+    );
+    if (FAILED(hr)) return false;
+
+    hr = dwriteFactory_->CreateTextFormat(
+        L"Consolas",
+        nullptr,
+        DWRITE_FONT_WEIGHT_REGULAR,
+        DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL,
+        10.0f,
+        L"en-us",
+        &graphLegendFormat_
+    );
+    if (FAILED(hr)) return false;
+
+    return CreateDeviceResources();
+}
+
+void PerformanceHUD::Shutdown() noexcept {
+    DiscardDeviceResources();
+    dashedStrokeStyle_.Reset();
+    graphLegendFormat_.Reset();
+    textFormat_.Reset();
+    dwriteFactory_.Reset();
+    d2dFactory_.Reset();
+    swapChain_ = nullptr;
+}
+
+void PerformanceHUD::DiscardDeviceResources() {
+    presentLineBrush_.Reset();
+    renderLineBrush_.Reset();
+    gridBrush_.Reset();
+    graphBgBrush_.Reset();
+    backgroundBrush_.Reset();
+    textBrush_.Reset();
+    d2dRenderTarget_.Reset();
+}
+
+bool PerformanceHUD::CreateDeviceResources() {
+    if (!swapChain_ || !d2dFactory_) return false;
+
+    ComPtr<IDXGISurface> surface;
+    HRESULT hr = swapChain_->GetBuffer(0, IID_PPV_ARGS(&surface));
+    if (FAILED(hr)) return false;
+
+    D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+        D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+    );
+
+    hr = d2dFactory_->CreateDxgiSurfaceRenderTarget(surface.Get(), &props, &d2dRenderTarget_);
+    if (FAILED(hr)) return false;
+
+    hr = d2dRenderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.95f, 0.35f, 1.0f), &textBrush_);
+    if (FAILED(hr)) return false;
+
+    hr = d2dRenderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.04f, 0.04f, 0.06f, 0.82f), &backgroundBrush_);
+    if (FAILED(hr)) return false;
+
+    hr = d2dRenderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.02f, 0.02f, 0.03f, 0.90f), &graphBgBrush_);
+    if (FAILED(hr)) return false;
+
+    hr = d2dRenderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.40f, 0.40f, 0.45f, 0.50f), &gridBrush_);
+    if (FAILED(hr)) return false;
+
+    hr = d2dRenderTarget_->CreateSolidColorBrush(D2D1::ColorF(1.00f, 0.60f, 0.15f, 1.0f), &renderLineBrush_);
+    if (FAILED(hr)) return false;
+
+    hr = d2dRenderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.20f, 0.70f, 1.00f, 1.0f), &presentLineBrush_);
+    return SUCCEEDED(hr);
+}
+
+void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
+    if (!visible_ || !d2dRenderTarget_ || !dwriteFactory_ || !textFormat_) return;
+
+    renderHistory_[historyIndex_] = metrics.renderTimeMs;
+    presentHistory_[historyIndex_] = metrics.presentTimeMs;
+    historyIndex_ = (historyIndex_ + 1) % kGraphHistorySize;
+    if (historyCount_ < kGraphHistorySize) {
+        historyCount_++;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+
+    accumDecode_ += metrics.decodeTimeMs;
+    accumRender_ += metrics.renderTimeMs;
+    accumBlt_ += metrics.bltTimeMs;
+    accumPresent_ += metrics.presentTimeMs;
+    sampleCount_++;
+
+    maxDecodeMs_ = (std::max)(maxDecodeMs_, metrics.decodeTimeMs);
+    maxRenderMs_ = (std::max)(maxRenderMs_, metrics.renderTimeMs);
+    maxBltMs_ = (std::max)(maxBltMs_, metrics.bltTimeMs);
+    maxPresentMs_ = (std::max)(maxPresentMs_, metrics.presentTimeMs);
+
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastPeakResetTime_).count() >= 2000) {
+        maxDecodeMs_ = metrics.decodeTimeMs;
+        maxRenderMs_ = metrics.renderTimeMs;
+        maxBltMs_ = metrics.bltTimeMs;
+        maxPresentMs_ = metrics.presentTimeMs;
+        lastPeakResetTime_ = now;
+    }
+
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastTextUpdateTime_).count() >= 250 || cachedText_.empty()) {
+        float avgDecode = sampleCount_ > 0 ? (accumDecode_ / sampleCount_) : metrics.decodeTimeMs;
+        float avgRender = sampleCount_ > 0 ? (accumRender_ / sampleCount_) : metrics.renderTimeMs;
+        float avgBlt = sampleCount_ > 0 ? (accumBlt_ / sampleCount_) : metrics.bltTimeMs;
+        float avgPresent = sampleCount_ > 0 ? (accumPresent_ / sampleCount_) : metrics.presentTimeMs;
+
+        std::wstringstream ss;
+        ss << std::fixed << std::setprecision(1);
+        ss << L"Eidolon HUD [Ctrl+Shift+H]\n";
+        ss << L"FPS: " << metrics.fps << L"\n";
+        ss << L"Decode:  avg " << avgDecode << L" ms | max " << maxDecodeMs_ << L" ms\n";
+        ss << L"Render:  avg " << avgRender << L" ms | max " << maxRenderMs_ << L" ms\n";
+        ss << L"  Blt:   avg " << avgBlt << L" ms | max " << maxBltMs_ << L" ms\n";
+        ss << L"  Pres:  avg " << avgPresent << L" ms | max " << maxPresentMs_ << L" ms\n";
+        ss << L"Video Queue: " << metrics.videoQueueSize << L"\n";
+        ss << L"Audio Buffer: " << metrics.audioQueuedMs << L" ms\n";
+        ss << L"Host: " << metrics.hostWidth << L"x" << metrics.hostHeight << L"\n";
+        ss << L"Client: " << metrics.clientWidth << L"x" << metrics.clientHeight;
+
+        cachedText_ = ss.str();
+        accumDecode_ = 0.0f;
+        accumRender_ = 0.0f;
+        accumBlt_ = 0.0f;
+        accumPresent_ = 0.0f;
+        sampleCount_ = 0;
+        lastTextUpdateTime_ = now;
+    }
+
+    d2dRenderTarget_->BeginDraw();
+
+    D2D1_RECT_F bgRect = D2D1::RectF(14.0f, 14.0f, 350.0f, 335.0f);
+    D2D1_ROUNDED_RECT roundedRect = D2D1::RoundedRect(bgRect, 6.0f, 6.0f);
+    d2dRenderTarget_->FillRoundedRectangle(roundedRect, backgroundBrush_.Get());
+
+    ComPtr<IDWriteTextLayout> textLayout;
+    HRESULT hr = dwriteFactory_->CreateTextLayout(
+        cachedText_.c_str(),
+        static_cast<UINT32>(cachedText_.length()),
+        textFormat_.Get(),
+        330.0f,
+        198.0f,
+        textLayout.GetAddressOf()
+    );
+
+    if (SUCCEEDED(hr) && textLayout) {
+        D2D1_POINT_2F origin = D2D1::Point2F(24.0f, 22.0f);
+        d2dRenderTarget_->DrawTextLayout(origin, textLayout.Get(), textBrush_.Get());
+    }
+
+    const float graphX = 24.0f;
+    const float graphY = 222.0f;
+    const float graphW = 312.0f;
+    const float graphH = 80.0f;
+    const float graphBottom = graphY + graphH;
+
+    D2D1_RECT_F graphRect = D2D1::RectF(graphX, graphY, graphX + graphW, graphBottom);
+    d2dRenderTarget_->FillRectangle(graphRect, graphBgBrush_.Get());
+    d2dRenderTarget_->DrawRectangle(graphRect, gridBrush_.Get(), 1.0f);
+
+    float maxPlotMs = 20.0f;
+    for (size_t i = 0; i < historyCount_; ++i) {
+        maxPlotMs = (std::max)({maxPlotMs, renderHistory_[i], presentHistory_[i]});
+    }
+    maxPlotMs = std::ceil(maxPlotMs / 5.0f) * 5.0f;
+
+    auto timeToY = [&](float ms) -> float {
+        float normalized = ms / maxPlotMs;
+        normalized = (std::min)((std::max)(normalized, 0.0f), 1.0f);
+        return graphBottom - (normalized * graphH);
+    };
+
+    float y8ms = timeToY(8.33f);
+    d2dRenderTarget_->DrawLine(
+        D2D1::Point2F(graphX, y8ms),
+        D2D1::Point2F(graphX + graphW, y8ms),
+        gridBrush_.Get(),
+        0.8f,
+        dashedStrokeStyle_.Get()
+    );
+
+    float y16ms = timeToY(16.66f);
+    d2dRenderTarget_->DrawLine(
+        D2D1::Point2F(graphX, y16ms),
+        D2D1::Point2F(graphX + graphW, y16ms),
+        gridBrush_.Get(),
+        0.8f,
+        dashedStrokeStyle_.Get()
+    );
+
+    if (historyCount_ > 1) {
+        float stepX = graphW / static_cast<float>(kGraphHistorySize - 1);
+        size_t startIdx = (historyCount_ < kGraphHistorySize) ? 0 : historyIndex_;
+
+        for (size_t i = 1; i < historyCount_; ++i) {
+            size_t prevSlot = (startIdx + i - 1) % kGraphHistorySize;
+            size_t currSlot = (startIdx + i) % kGraphHistorySize;
+
+            float x0 = graphX + static_cast<float>(i - 1) * stepX;
+            float x1 = graphX + static_cast<float>(i) * stepX;
+
+            float rendY0 = timeToY(renderHistory_[prevSlot]);
+            float rendY1 = timeToY(renderHistory_[currSlot]);
+            d2dRenderTarget_->DrawLine(
+                D2D1::Point2F(x0, rendY0),
+                D2D1::Point2F(x1, rendY1),
+                renderLineBrush_.Get(),
+                1.5f
+            );
+
+            float presY0 = timeToY(presentHistory_[prevSlot]);
+            float presY1 = timeToY(presentHistory_[currSlot]);
+            d2dRenderTarget_->DrawLine(
+                D2D1::Point2F(x0, presY0),
+                D2D1::Point2F(x1, presY1),
+                presentLineBrush_.Get(),
+                1.2f
+            );
+        }
+    }
+
+    const std::wstring legendText = L"Render (Orange) | Present (Blue) | 8.3ms / 16.6ms";
+    d2dRenderTarget_->DrawText(
+        legendText.c_str(),
+        static_cast<UINT32>(legendText.length()),
+        graphLegendFormat_.Get(),
+        D2D1::RectF(graphX, graphBottom + 4.0f, graphX + graphW, graphBottom + 20.0f),
+        gridBrush_.Get()
+    );
+
+    d2dRenderTarget_->EndDraw();
+}
 
 D3D11Renderer::D3D11Renderer() = default;
 
@@ -24,10 +316,14 @@ bool D3D11Renderer::Initialize(HWND hwnd, uint32_t width, uint32_t height) {
         return false;
     }
 
+    hud_.Initialize(swapChain_.Get());
     return true;
 }
 
 void D3D11Renderer::Shutdown() noexcept {
+    hud_.Shutdown();
+    cachedInputViews_.clear();
+    cachedInputTexture_ = nullptr;
     CleanupRenderTarget();
     outputView_.Reset();
     videoProcessor_.Reset();
@@ -91,6 +387,8 @@ bool D3D11Renderer::CreateVideoProcessor() {
 
     videoProcessor_.Reset();
     videoProcessorEnum_.Reset();
+    cachedInputViews_.clear();
+    cachedInputTexture_ = nullptr;
 
     uint32_t inW = (videoWidth_ > 0) ? videoWidth_ : windowWidth_;
     uint32_t inH = (videoHeight_ > 0) ? videoHeight_ : windowHeight_;
@@ -154,40 +452,65 @@ void D3D11Renderer::Resize(uint32_t width, uint32_t height) {
     windowWidth_ = width;
     windowHeight_ = height;
 
+    hud_.DiscardDeviceResources();
     CleanupRenderTarget();
     videoProcessor_.Reset();
     videoProcessorEnum_.Reset();
+    cachedInputViews_.clear();
+    cachedInputTexture_ = nullptr;
 
     swapChain_->ResizeBuffers(0, windowWidth_, windowHeight_, DXGI_FORMAT_UNKNOWN, 0);
 
     CreateVideoProcessor();
     CreateRenderTarget();
+    hud_.CreateDeviceResources();
 }
 
-void D3D11Renderer::RenderFrame(const DecodedFrame& frame) {
+void D3D11Renderer::RenderFrame(const DecodedFrame& frame, PerformanceMetrics& metrics) {
     if (!frame.texture || !swapChain_) return;
 
     if (frame.width > 0 && frame.height > 0 && (frame.width != videoWidth_ || frame.height != videoHeight_)) {
         videoWidth_ = frame.width;
         videoHeight_ = frame.height;
+        hud_.DiscardDeviceResources();
         CleanupRenderTarget();
         CreateVideoProcessor();
         CreateRenderTarget();
+        hud_.CreateDeviceResources();
     }
 
+    auto t0 = std::chrono::high_resolution_clock::now();
+
     if (videoContext_ && videoProcessor_ && outputView_ && videoProcessorEnum_) {
-        D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd = {};
-        ivd.FourCC = 0;
-        ivd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-        ivd.Texture2D.ArraySlice = frame.subresourceIndex;
+        if (cachedInputTexture_ != frame.texture) {
+            cachedInputTexture_ = frame.texture;
+            D3D11_TEXTURE2D_DESC texDesc = {};
+            frame.texture->GetDesc(&texDesc);
+            cachedInputViews_.assign(texDesc.ArraySize, nullptr);
+        }
 
-        ComPtr<ID3D11VideoProcessorInputView> inputView;
-        HRESULT hr = videoDevice_->CreateVideoProcessorInputView(frame.texture, videoProcessorEnum_.Get(), &ivd, &inputView);
+        if (frame.subresourceIndex >= cachedInputViews_.size()) {
+            cachedInputViews_.resize(frame.subresourceIndex + 1);
+        }
 
-        if (SUCCEEDED(hr)) {
+        if (!cachedInputViews_[frame.subresourceIndex]) {
+            D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd = {};
+            ivd.FourCC = 0;
+            ivd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+            ivd.Texture2D.ArraySlice = frame.subresourceIndex;
+            videoDevice_->CreateVideoProcessorInputView(
+                frame.texture,
+                videoProcessorEnum_.Get(),
+                &ivd,
+                &cachedInputViews_[frame.subresourceIndex]
+            );
+        }
+
+        ID3D11VideoProcessorInputView* inputView = cachedInputViews_[frame.subresourceIndex].Get();
+        if (inputView) {
             D3D11_VIDEO_PROCESSOR_STREAM stream = {};
             stream.Enable = TRUE;
-            stream.pInputSurface = inputView.Get();
+            stream.pInputSurface = inputView;
 
             RECT srcRect = { 0, 0, static_cast<LONG>(frame.width), static_cast<LONG>(frame.height) };
             RECT dstRect = { 0, 0, static_cast<LONG>(windowWidth_), static_cast<LONG>(windowHeight_) };
@@ -199,5 +522,13 @@ void D3D11Renderer::RenderFrame(const DecodedFrame& frame) {
         }
     }
 
+    auto t1 = std::chrono::high_resolution_clock::now();
+    metrics.bltTimeMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
+
+    hud_.Render(metrics);
+
+    auto p0 = std::chrono::high_resolution_clock::now();
     swapChain_->Present(0, 0);
+    auto p1 = std::chrono::high_resolution_clock::now();
+    metrics.presentTimeMs = std::chrono::duration<float, std::milli>(p1 - p0).count();
 }

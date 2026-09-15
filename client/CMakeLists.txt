@@ -1,7 +1,7 @@
 find_package(LibDataChannel CONFIG REQUIRED)
 find_package(Opus CONFIG REQUIRED)
 find_package(SDL2 CONFIG REQUIRED)
-find_package(ffmpeg REQUIRED)
+find_package(FFMPEG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 
 add_executable(eidolon_client
@@ -33,4 +33,13 @@ target_link_libraries(eidolon_client PRIVATE
     version.lib
     winmm.lib
     avrt.lib
+    d2d1.lib
+    dwrite.lib
+)
+
+add_custom_command(TARGET eidolon_client POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "//tsclient/C/Users/alkrv/Desktop/Release"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:eidolon_client>
+        "//tsclient/C/Users/alkrv/Desktop/Release/"
 )
