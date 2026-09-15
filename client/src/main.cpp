@@ -63,13 +63,19 @@ int main(int argc, char* argv[]) {
     SDL_DisplayMode dm = {};
     uint32_t screenWidth = 1920;
     uint32_t screenHeight = 1080;
+    uint32_t screenRefreshRate = 60;
 
     if (SDL_GetCurrentDisplayMode(0, &dm) == 0) {
         if (dm.w > 0 && dm.h > 0) {
             screenWidth = static_cast<uint32_t>(dm.w);
             screenHeight = static_cast<uint32_t>(dm.h);
         }
+        if (dm.refresh_rate > 0) {
+            screenRefreshRate = static_cast<uint32_t>(dm.refresh_rate);
+        }
     }
+    std::cout << "[Client] Detected display: " << screenWidth << "x" << screenHeight
+              << " @" << screenRefreshRate << "Hz" << std::endl;
 
     uint32_t windowWidth = screenWidth;
     uint32_t windowHeight = screenHeight;
@@ -135,6 +141,13 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
+    ClientConfigMessage clientConfig;
+    clientConfig.width = screenWidth;
+    clientConfig.height = screenHeight;
+    clientConfig.refreshRate = screenRefreshRate;
+    clientConfig.maxBitrateKbps = (screenRefreshRate >= 120) ? 50000 : 35000;
+    client.SendClientConfig(clientConfig);
+
     PerformanceMetrics metrics;
     metrics.clientWidth = windowWidth;
     metrics.clientHeight = windowHeight;
@@ -153,6 +166,11 @@ int main(int argc, char* argv[]) {
         inputHandler.SetHostResolution(frame.width, frame.height);
         metrics.hostWidth = frame.width;
         metrics.hostHeight = frame.height;
+
+        auto w0 = std::chrono::high_resolution_clock::now();
+        renderer.WaitForFrameLatency(100);
+        auto w1 = std::chrono::high_resolution_clock::now();
+        metrics.waitLatencyMs = std::chrono::duration<float, std::milli>(w1 - w0).count();
 
         auto t0 = std::chrono::high_resolution_clock::now();
         renderer.RenderFrame(frame, metrics);
@@ -206,15 +224,20 @@ int main(int argc, char* argv[]) {
             bool popped = false;
             while (videoQueue.Pop(pkt)) {
                 popped = true;
+                size_t remaining = 0;
                 if (videoQueueSize.load(std::memory_order_relaxed) > 0) {
-                    videoQueueSize.fetch_sub(1, std::memory_order_relaxed);
+                    remaining = videoQueueSize.fetch_sub(1, std::memory_order_relaxed) - 1;
                 }
-                metrics.videoQueueSize = videoQueueSize.load(std::memory_order_relaxed);
+                metrics.videoQueueSize = remaining;
+
+                bool isLatest = (remaining == 0) && videoQueue.Empty();
 
                 decodeStartTime = std::chrono::high_resolution_clock::now();
-                decoder.Decode(pkt.data.data(), pkt.data.size());
+                decoder.Decode(pkt.data.data(), pkt.data.size(), isLatest);
 
-                frameCount++;
+                if (isLatest) {
+                    frameCount++;
+                }
             }
 
             auto now = std::chrono::steady_clock::now();

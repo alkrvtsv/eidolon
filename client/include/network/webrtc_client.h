@@ -19,6 +19,7 @@ public:
 
     void ProcessSignalingMessage(const std::string& msg);
     void SendInputData(const uint8_t* data, size_t size);
+    void SendClientConfig(const ClientConfigMessage& config);
     void RequestIDR();
 
     void SetSignalingSender(std::function<void(const std::string&)> callback) {
@@ -44,7 +45,7 @@ private:
     static bool IsKeyframe(const uint8_t* data, size_t size);
 
     std::shared_ptr<rtc::PeerConnection> pc_;
-    
+
     std::shared_ptr<rtc::DataChannel> videoChannel_;
     std::shared_ptr<rtc::DataChannel> inputChannel_;
     std::shared_ptr<rtc::DataChannel> audioChannel_;
@@ -54,6 +55,9 @@ private:
     std::atomic<bool> connected_{false};
     bool hasRemoteDescription_{false};
     std::vector<std::pair<std::string, std::string>> pendingCandidates_;
+
+    ClientConfigMessage pendingConfig_{};
+    bool hasPendingConfig_{false};
 
     uint32_t activeFrameId_{0};
     uint32_t expectedFrameSize_{0};

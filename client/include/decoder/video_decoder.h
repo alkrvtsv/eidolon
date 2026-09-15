@@ -18,6 +18,6 @@ public:
     virtual bool Initialize(ID3D11Device* device, ID3D11DeviceContext* context) = 0;
     virtual void Shutdown() noexcept = 0;
 
-    virtual bool Decode(const uint8_t* data, size_t size) = 0;
+    virtual bool Decode(const uint8_t* data, size_t size, bool render = true) = 0;
     virtual void SetFrameCallback(std::function<void(const DecodedFrame&)> callback) = 0;
 };

@@ -3,7 +3,7 @@
 #include "protocol.h"
 #include "decoder/ffmpeg_d3d11va_decoder.h"
 #include <d3d11.h>
-#include <dxgi1_3.h>
+#include <dxgi1_5.h>
 #include <dwrite.h>
 #include <d2d1.h>
 #include <wrl/client.h>
@@ -21,6 +21,7 @@ struct PerformanceMetrics {
     float renderTimeMs{0.0f};
     float bltTimeMs{0.0f};
     float presentTimeMs{0.0f};
+    float waitLatencyMs{0.0f};
     size_t videoQueueSize{0};
     uint32_t audioQueuedMs{0};
     uint32_t hostWidth{0};
@@ -71,10 +72,12 @@ private:
     float maxRenderMs_{0.0f};
     float maxBltMs_{0.0f};
     float maxPresentMs_{0.0f};
+    float maxWaitMs_{0.0f};
     float accumDecode_{0.0f};
     float accumRender_{0.0f};
     float accumBlt_{0.0f};
     float accumPresent_{0.0f};
+    float accumWait_{0.0f};
     uint32_t sampleCount_{0};
 
     std::array<float, kGraphHistorySize> renderHistory_{};
@@ -92,6 +95,7 @@ public:
     void Shutdown() noexcept;
     void Resize(uint32_t width, uint32_t height);
 
+    bool WaitForFrameLatency(DWORD timeoutMs = 100);
     void RenderFrame(const DecodedFrame& frame, PerformanceMetrics& metrics);
     void ToggleHUD() { hud_.Toggle(); }
     std::wstring GetHUDText() const { return hud_.GetFormattedText(); }
@@ -110,6 +114,7 @@ private:
     uint32_t windowHeight_{1080};
     uint32_t videoWidth_{0};
     uint32_t videoHeight_{0};
+    HANDLE frameLatencyWaitableObject_{nullptr};
 
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;

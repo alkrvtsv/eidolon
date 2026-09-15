@@ -91,11 +91,21 @@ void WebRTCStreamer::SetupDataChannels() {
     controlChannel_ = pc_->createDataChannel("control", controlInit);
 
     controlChannel_->onMessage([this](std::variant<rtc::binary, std::string> data) {
-        if (std::holds_alternative<rtc::binary>(data) && controlCallback_) {
+        if (std::holds_alternative<rtc::binary>(data)) {
             const auto& bin = std::get<rtc::binary>(data);
-            if (bin.size() >= sizeof(ControlCommandMessage)) {
-                const auto* cmd = reinterpret_cast<const ControlCommandMessage*>(bin.data());
-                controlCallback_(cmd->command);
+            if (bin.size() >= sizeof(MessageType)) {
+                auto type = *reinterpret_cast<const MessageType*>(bin.data());
+                if (type == MessageType::ControlCommand && bin.size() >= sizeof(ControlCommandMessage)) {
+                    const auto* cmd = reinterpret_cast<const ControlCommandMessage*>(bin.data());
+                    if (controlCallback_) {
+                        controlCallback_(cmd->command);
+                    }
+                } else if (type == MessageType::ClientConfig && bin.size() >= sizeof(ClientConfigMessage)) {
+                    const auto* cfg = reinterpret_cast<const ClientConfigMessage*>(bin.data());
+                    if (clientConfigCallback_) {
+                        clientConfigCallback_(*cfg);
+                    }
+                }
             }
         }
     });
@@ -156,7 +166,7 @@ bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size) {
     }
 
     try {
-        if (videoChannel_->bufferedAmount() > 128 * 1024) {
+        if (videoChannel_->bufferedAmount() > 1024 * 1024) {
             return false;
         }
 

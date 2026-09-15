@@ -1,5 +1,5 @@
 #include "renderer/d3d11_renderer.h"
-#include <dxgi1_2.h>
+#include <dxgi1_5.h>
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -147,18 +147,21 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
     accumRender_ += metrics.renderTimeMs;
     accumBlt_ += metrics.bltTimeMs;
     accumPresent_ += metrics.presentTimeMs;
+    accumWait_ += metrics.waitLatencyMs;
     sampleCount_++;
 
     maxDecodeMs_ = (std::max)(maxDecodeMs_, metrics.decodeTimeMs);
     maxRenderMs_ = (std::max)(maxRenderMs_, metrics.renderTimeMs);
     maxBltMs_ = (std::max)(maxBltMs_, metrics.bltTimeMs);
     maxPresentMs_ = (std::max)(maxPresentMs_, metrics.presentTimeMs);
+    maxWaitMs_ = (std::max)(maxWaitMs_, metrics.waitLatencyMs);
 
     if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastPeakResetTime_).count() >= 2000) {
         maxDecodeMs_ = metrics.decodeTimeMs;
         maxRenderMs_ = metrics.renderTimeMs;
         maxBltMs_ = metrics.bltTimeMs;
         maxPresentMs_ = metrics.presentTimeMs;
+        maxWaitMs_ = metrics.waitLatencyMs;
         lastPeakResetTime_ = now;
     }
 
@@ -167,6 +170,7 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
         float avgRender = sampleCount_ > 0 ? (accumRender_ / sampleCount_) : metrics.renderTimeMs;
         float avgBlt = sampleCount_ > 0 ? (accumBlt_ / sampleCount_) : metrics.bltTimeMs;
         float avgPresent = sampleCount_ > 0 ? (accumPresent_ / sampleCount_) : metrics.presentTimeMs;
+        float avgWait = sampleCount_ > 0 ? (accumWait_ / sampleCount_) : metrics.waitLatencyMs;
 
         std::wstringstream ss;
         ss << std::fixed << std::setprecision(1);
@@ -174,6 +178,7 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
         ss << L"FPS: " << metrics.fps << L"\n";
         ss << L"Decode:  avg " << avgDecode << L" ms | max " << maxDecodeMs_ << L" ms\n";
         ss << L"Render:  avg " << avgRender << L" ms | max " << maxRenderMs_ << L" ms\n";
+        ss << L"  Wait:  avg " << avgWait << L" ms | max " << maxWaitMs_ << L" ms\n";
         ss << L"  Blt:   avg " << avgBlt << L" ms | max " << maxBltMs_ << L" ms\n";
         ss << L"  Pres:  avg " << avgPresent << L" ms | max " << maxPresentMs_ << L" ms\n";
         ss << L"Video Queue: " << metrics.videoQueueSize << L"\n";
@@ -186,13 +191,14 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
         accumRender_ = 0.0f;
         accumBlt_ = 0.0f;
         accumPresent_ = 0.0f;
+        accumWait_ = 0.0f;
         sampleCount_ = 0;
         lastTextUpdateTime_ = now;
     }
 
     d2dRenderTarget_->BeginDraw();
 
-    D2D1_RECT_F bgRect = D2D1::RectF(14.0f, 14.0f, 350.0f, 335.0f);
+    D2D1_RECT_F bgRect = D2D1::RectF(14.0f, 14.0f, 350.0f, 350.0f);
     D2D1_ROUNDED_RECT roundedRect = D2D1::RoundedRect(bgRect, 6.0f, 6.0f);
     d2dRenderTarget_->FillRoundedRectangle(roundedRect, backgroundBrush_.Get());
 
@@ -202,7 +208,7 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
         static_cast<UINT32>(cachedText_.length()),
         textFormat_.Get(),
         330.0f,
-        198.0f,
+        210.0f,
         textLayout.GetAddressOf()
     );
 
@@ -212,7 +218,7 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
     }
 
     const float graphX = 24.0f;
-    const float graphY = 222.0f;
+    const float graphY = 236.0f;
     const float graphW = 312.0f;
     const float graphH = 80.0f;
     const float graphBottom = graphY + graphH;
@@ -330,32 +336,18 @@ void D3D11Renderer::Shutdown() noexcept {
     videoProcessorEnum_.Reset();
     videoContext_.Reset();
     videoDevice_.Reset();
+    frameLatencyWaitableObject_ = nullptr;
     swapChain_.Reset();
     context_.Reset();
     device_.Reset();
 }
 
 bool D3D11Renderer::CreateDeviceAndSwapChain(HWND hwnd) {
-    DXGI_SWAP_CHAIN_DESC scd = {};
-    scd.BufferCount = 2;
-    scd.BufferDesc.Width = windowWidth_;
-    scd.BufferDesc.Height = windowHeight_;
-    scd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    scd.BufferDesc.RefreshRate.Numerator = 0;
-    scd.BufferDesc.RefreshRate.Denominator = 1;
-    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    scd.OutputWindow = hwnd;
-    scd.SampleDesc.Count = 1;
-    scd.SampleDesc.Quality = 0;
-    scd.Windowed = TRUE;
-    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-
     UINT createFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
-
     D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
     D3D_FEATURE_LEVEL featureLevel;
 
-    HRESULT hr = D3D11CreateDeviceAndSwapChain(
+    HRESULT hr = D3D11CreateDevice(
         nullptr,
         D3D_DRIVER_TYPE_HARDWARE,
         nullptr,
@@ -363,19 +355,56 @@ bool D3D11Renderer::CreateDeviceAndSwapChain(HWND hwnd) {
         featureLevels,
         ARRAYSIZE(featureLevels),
         D3D11_SDK_VERSION,
-        &scd,
-        &swapChain_,
         &device_,
         &featureLevel,
         &context_
     );
-
     if (FAILED(hr)) return false;
 
     ComPtr<IDXGIDevice1> dxgiDevice;
-    if (SUCCEEDED(device_.As(&dxgiDevice))) {
-        dxgiDevice->SetMaximumFrameLatency(1);
+    if (FAILED(device_.As(&dxgiDevice))) return false;
+
+    ComPtr<IDXGIAdapter> adapter;
+    if (FAILED(dxgiDevice->GetAdapter(&adapter))) return false;
+
+    ComPtr<IDXGIFactory2> factory2;
+    if (FAILED(adapter->GetParent(IID_PPV_ARGS(&factory2)))) return false;
+
+    DXGI_SWAP_CHAIN_DESC1 scd = {};
+    scd.Width = windowWidth_;
+    scd.Height = windowHeight_;
+    scd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    scd.Stereo = FALSE;
+    scd.SampleDesc.Count = 1;
+    scd.SampleDesc.Quality = 0;
+    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scd.BufferCount = 3;
+    scd.Scaling = DXGI_SCALING_NONE;
+    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    scd.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
+    scd.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+
+    ComPtr<IDXGISwapChain1> swapChain1;
+    hr = factory2->CreateSwapChainForHwnd(
+        device_.Get(),
+        hwnd,
+        &scd,
+        nullptr,
+        nullptr,
+        &swapChain1
+    );
+    if (FAILED(hr)) return false;
+
+    factory2->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+
+    ComPtr<IDXGISwapChain2> swapChain2;
+    if (SUCCEEDED(swapChain1.As(&swapChain2))) {
+        swapChain2->SetMaximumFrameLatency(1);
+        frameLatencyWaitableObject_ = swapChain2->GetFrameLatencyWaitableObject();
     }
+
+    hr = swapChain1.As(&swapChain_);
+    if (FAILED(hr)) return false;
 
     device_.As(&videoDevice_);
     context_.As(&videoContext_);
@@ -459,11 +488,17 @@ void D3D11Renderer::Resize(uint32_t width, uint32_t height) {
     cachedInputViews_.clear();
     cachedInputTexture_ = nullptr;
 
-    swapChain_->ResizeBuffers(0, windowWidth_, windowHeight_, DXGI_FORMAT_UNKNOWN, 0);
+    swapChain_->ResizeBuffers(3, windowWidth_, windowHeight_, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
 
     CreateVideoProcessor();
     CreateRenderTarget();
     hud_.CreateDeviceResources();
+}
+
+bool D3D11Renderer::WaitForFrameLatency(DWORD timeoutMs) {
+    if (!frameLatencyWaitableObject_) return true;
+    DWORD res = WaitForSingleObjectEx(frameLatencyWaitableObject_, timeoutMs, TRUE);
+    return (res == WAIT_OBJECT_0);
 }
 
 void D3D11Renderer::RenderFrame(const DecodedFrame& frame, PerformanceMetrics& metrics) {

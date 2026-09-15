@@ -12,7 +12,8 @@ enum class MessageType : uint8_t {
     CursorPosition = 5,
     CursorShape = 6,
     ControlCommand = 7,
-    InputMouseAbsolute = 8
+    InputMouseAbsolute = 8,
+    ClientConfig = 9
 };
 
 struct MouseRelativeMessage {
@@ -69,6 +70,14 @@ enum class ControlCommandType : uint8_t {
 struct ControlCommandMessage {
     MessageType type{MessageType::ControlCommand};
     ControlCommandType command{ControlCommandType::RequestIDR};
+};
+
+struct ClientConfigMessage {
+    MessageType type{MessageType::ClientConfig};
+    uint32_t width{1920};
+    uint32_t height{1080};
+    uint32_t refreshRate{60};
+    uint32_t maxBitrateKbps{35000};
 };
 
 struct VideoChunkHeader {

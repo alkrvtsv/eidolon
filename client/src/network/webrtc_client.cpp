@@ -37,7 +37,7 @@ bool WebRTCClient::Initialize() {
     pc_->onDataChannel([this](std::shared_ptr<rtc::DataChannel> dc) {
         std::string label = dc->label();
         std::cout << "[WebRTC Client] Inbound DataChannel: " << label << std::endl;
-        
+
         if (label == "video") {
             videoChannel_ = dc;
             videoChannel_->onMessage([this](std::variant<rtc::binary, std::string> data) {
@@ -77,6 +77,9 @@ bool WebRTCClient::Initialize() {
         } else if (label == "control") {
             controlChannel_ = dc;
             controlChannel_->onOpen([this]() {
+                if (hasPendingConfig_) {
+                    SendClientConfig(pendingConfig_);
+                }
                 RequestIDR();
             });
         }
@@ -86,6 +89,9 @@ bool WebRTCClient::Initialize() {
         std::cout << "[WebRTC Client] State: " << state << std::endl;
         connected_ = (state == rtc::PeerConnection::State::Connected);
         if (connected_) {
+            if (hasPendingConfig_) {
+                SendClientConfig(pendingConfig_);
+            }
             RequestIDR();
         }
     });
@@ -232,6 +238,23 @@ void WebRTCClient::SendInputData(const uint8_t* data, size_t size) {
             reinterpret_cast<const std::byte*>(data + size)
         );
         inputChannel_->send(std::move(payload));
+    }
+}
+
+void WebRTCClient::SendClientConfig(const ClientConfigMessage& config) {
+    pendingConfig_ = config;
+    hasPendingConfig_ = true;
+
+    if (controlChannel_ && controlChannel_->isOpen()) {
+        rtc::binary payload(
+            reinterpret_cast<const std::byte*>(&config),
+            reinterpret_cast<const std::byte*>(&config) + sizeof(ClientConfigMessage)
+        );
+        controlChannel_->send(std::move(payload));
+        std::cout << "[WebRTC Client] Sent ClientConfig: "
+                  << config.width << "x" << config.height
+                  << " @" << config.refreshRate << "Hz, Max Bitrate: "
+                  << config.maxBitrateKbps << " kbps" << std::endl;
     }
 }
 

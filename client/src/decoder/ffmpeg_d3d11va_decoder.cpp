@@ -125,7 +125,7 @@ void FFmpegD3D11VADecoder::Shutdown() noexcept {
     device_.Reset();
 }
 
-bool FFmpegD3D11VADecoder::Decode(const uint8_t* data, size_t size) {
+bool FFmpegD3D11VADecoder::Decode(const uint8_t* data, size_t size, bool render) {
     if (!codecContext_ || !packet_ || !frame_ || !data || size == 0) {
         return false;
     }
@@ -174,7 +174,7 @@ bool FFmpegD3D11VADecoder::Decode(const uint8_t* data, size_t size) {
                 return false;
             }
 
-            if (frame_->format == AV_PIX_FMT_D3D11 && frameCallback_) {
+            if (frame_->format == AV_PIX_FMT_D3D11 && frameCallback_ && render) {
                 auto* texture = reinterpret_cast<ID3D11Texture2D*>(frame_->data[0]);
                 auto subresourceIndex = static_cast<uint32_t>(reinterpret_cast<intptr_t>(frame_->data[1]));
 

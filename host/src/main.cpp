@@ -12,6 +12,7 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <algorithm>
 #include <windows.h>
 #include <mmsystem.h>
 
@@ -43,17 +44,22 @@ int main() {
             return -1;
         }
 
+        std::atomic<uint32_t> sessionFps{60};
+        std::atomic<uint32_t> sessionBitrate{35'000'000};
+        std::atomic<int64_t> sessionMinIntervalUs{10000};
+        std::atomic<bool> reconfigureEncoderRequested{false};
+
         EncoderConfig encConfig;
         encConfig.width = capturer.GetWidth();
         encConfig.height = capturer.GetHeight();
-        encConfig.frameRateNum = 60;
+        encConfig.frameRateNum = sessionFps.load();
         encConfig.frameRateDen = 1;
-        encConfig.bitRate = 35'000'000;
-        encConfig.maxBitRate = 45'000'000;
-        encConfig.vbvBufferSize = 2'500'000;
+        encConfig.bitRate = sessionBitrate.load();
+        encConfig.maxBitRate = static_cast<uint32_t>(sessionBitrate.load() * 1.25);
+        encConfig.vbvBufferSize = static_cast<uint32_t>(sessionBitrate.load() / encConfig.frameRateNum * 1.5);
         encConfig.enableIntraRefresh = true;
-        encConfig.intraRefreshPeriod = 60;
-        encConfig.intraRefreshDuration = 10;
+        encConfig.intraRefreshPeriod = encConfig.frameRateNum;
+        encConfig.intraRefreshDuration = std::max(6u, encConfig.frameRateNum / 10);
 
         NVENCEncoder encoder;
         if (!encoder.Initialize(capturer.GetDevice(), encConfig)) {
@@ -101,6 +107,23 @@ int main() {
                     lastIdrRequestTime = now;
                 }
             }
+        });
+
+        streamer.SetClientConfigCallback([&](const ClientConfigMessage& cfg) {
+            std::cout << "[Host] Received ClientConfig Handshake: " << cfg.width << "x" << cfg.height
+                      << " @" << cfg.refreshRate << "Hz, Max Bitrate: " << cfg.maxBitrateKbps << " kbps" << std::endl;
+
+            uint32_t targetFps = (cfg.refreshRate > 0) ? cfg.refreshRate : 60;
+            targetFps = std::clamp(targetFps, 30u, 144u);
+            sessionFps.store(targetFps);
+
+            uint32_t targetBps = (cfg.maxBitrateKbps > 0) ? (cfg.maxBitrateKbps * 1000) : 35'000'000;
+            sessionBitrate.store(targetBps);
+
+            int64_t targetIntervalUs = static_cast<int64_t>((1'000'000.0 / targetFps) * 0.85);
+            sessionMinIntervalUs.store(targetIntervalUs);
+
+            reconfigureEncoderRequested.store(true);
         });
 
         streamer.SetInputCallback([&](const uint8_t* data, size_t size) {
@@ -175,28 +198,36 @@ int main() {
         audioCapturer.Start();
         std::cout << "[Host] Pipeline ready and running..." << std::endl;
 
-        constexpr auto kTargetInterval = std::chrono::microseconds(16666);
-        auto nextFrameTime = std::chrono::steady_clock::now();
+        constexpr auto kKeepAliveInterval = std::chrono::milliseconds(500);
+        auto lastEncodeTime = std::chrono::steady_clock::now();
 
         while (true) {
-            auto now = std::chrono::steady_clock::now();
-            if (now < nextFrameTime) {
-                auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(nextFrameTime - now);
-                if (remaining.count() > 2000) {
-                    std::this_thread::sleep_for(std::chrono::microseconds(remaining.count() - 1500));
-                }
-                while (std::chrono::steady_clock::now() < nextFrameTime) {
-                    std::this_thread::yield();
-                }
+            if (reconfigureEncoderRequested.exchange(false)) {
+                uint32_t fps = sessionFps.load();
+                uint32_t bitrate = sessionBitrate.load();
+
+                encConfig.frameRateNum = fps;
+                encConfig.frameRateDen = 1;
+                encConfig.bitRate = bitrate;
+                encConfig.maxBitRate = static_cast<uint32_t>(bitrate * 1.25);
+                encConfig.vbvBufferSize = static_cast<uint32_t>(bitrate / (fps ? fps : 60) * 1.5);
+                encConfig.intraRefreshPeriod = fps;
+                encConfig.intraRefreshDuration = std::max(6u, fps / 10);
+
+                std::cout << "[Host] Dynamic Reconfigure: " << fps << " FPS, "
+                          << (bitrate / 1'000'000) << " Mbps, Min Interval: "
+                          << sessionMinIntervalUs.load() << " us" << std::endl;
+
+                encoder.Shutdown();
+                encoder.Initialize(capturer.GetDevice(), encConfig);
+                forceIDR = true;
             }
 
-            nextFrameTime += kTargetInterval;
-            if (std::chrono::steady_clock::now() > nextFrameTime + kTargetInterval) {
-                nextFrameTime = std::chrono::steady_clock::now() + kTargetInterval;
-            }
+            uint32_t currentFps = sessionFps.load();
+            uint32_t acquireTimeoutMs = std::max(5u, static_cast<uint32_t>(1000 / currentFps));
 
             ID3D11Texture2D* capturedTexture = nullptr;
-            CaptureStatus status = capturer.AcquireFrame(&capturedTexture, 0);
+            CaptureStatus status = capturer.AcquireFrame(&capturedTexture, acquireTimeoutMs);
 
             if (status == CaptureStatus::AccessLost || status == CaptureStatus::Error) {
                 std::cout << "[Host WARNING] DXGI Access Lost -> Reinitializing pipeline..." << std::endl;
@@ -213,9 +244,6 @@ int main() {
 
                 encConfig.width = capturer.GetWidth();
                 encConfig.height = capturer.GetHeight();
-                encConfig.enableIntraRefresh = true;
-                encConfig.intraRefreshPeriod = 60;
-                encConfig.intraRefreshDuration = 10;
                 encoder.Shutdown();
                 encoder.Initialize(capturer.GetDevice(), encConfig);
 
@@ -223,7 +251,16 @@ int main() {
                 continue;
             }
 
+            auto now = std::chrono::steady_clock::now();
+
             if (status == CaptureStatus::Success && capturedTexture) {
+                auto elapsedSinceLast = std::chrono::duration_cast<std::chrono::microseconds>(now - lastEncodeTime);
+                if (elapsedSinceLast.count() < sessionMinIntervalUs.load(std::memory_order_relaxed)) {
+                    capturedTexture->Release();
+                    capturer.ReleaseFrame();
+                    continue;
+                }
+
                 ID3D11Texture2D* nv12Texture = nullptr;
                 if (converter.Convert(capturedTexture, &nv12Texture)) {
                     lastValidNV12.Reset();
@@ -231,11 +268,19 @@ int main() {
                 }
                 capturedTexture->Release();
                 capturer.ReleaseFrame();
-            }
 
-            if (lastValidNV12) {
-                bool needIDR = forceIDR.exchange(false);
-                encoder.EncodeFrame(lastValidNV12.Get(), needIDR);
+                if (lastValidNV12) {
+                    bool needIDR = forceIDR.exchange(false);
+                    encoder.EncodeFrame(lastValidNV12.Get(), needIDR);
+                    lastEncodeTime = now;
+                }
+            } else if (status == CaptureStatus::Timeout) {
+                auto elapsedSinceLast = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastEncodeTime);
+                if (elapsedSinceLast >= kKeepAliveInterval && lastValidNV12) {
+                    bool needIDR = forceIDR.exchange(false);
+                    encoder.EncodeFrame(lastValidNV12.Get(), needIDR);
+                    lastEncodeTime = now;
+                }
             }
         }
 

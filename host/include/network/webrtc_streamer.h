@@ -34,6 +34,9 @@ public:
     void SetControlCallback(std::function<void(ControlCommandType)> callback) {
         controlCallback_ = std::move(callback);
     }
+    void SetClientConfigCallback(std::function<void(const ClientConfigMessage&)> callback) {
+        clientConfigCallback_ = std::move(callback);
+    }
 
     bool IsPeerConnected() const { return peerConnected_; }
 
@@ -59,4 +62,5 @@ private:
     std::function<void(const std::string&)> signalingSend_;
     std::function<void(const uint8_t* data, size_t size)> inputCallback_;
     std::function<void(ControlCommandType)> controlCallback_;
+    std::function<void(const ClientConfigMessage&)> clientConfigCallback_;
 };
