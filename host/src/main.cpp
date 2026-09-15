@@ -56,10 +56,10 @@ int main() {
         encConfig.frameRateDen = 1;
         encConfig.bitRate = sessionBitrate.load();
         encConfig.maxBitRate = static_cast<uint32_t>(sessionBitrate.load() * 1.25);
-        encConfig.vbvBufferSize = static_cast<uint32_t>(sessionBitrate.load() / encConfig.frameRateNum * 1.5);
+        encConfig.vbvBufferSize = static_cast<uint32_t>(sessionBitrate.load() / (encConfig.frameRateNum ? encConfig.frameRateNum : 120) * 1.5);
         encConfig.enableIntraRefresh = true;
-        encConfig.intraRefreshPeriod = encConfig.frameRateNum;
-        encConfig.intraRefreshDuration = std::max(6u, encConfig.frameRateNum / 10);
+        encConfig.intraRefreshPeriod = encConfig.frameRateNum * 2;
+        encConfig.intraRefreshDuration = encConfig.frameRateNum / 2;
 
         NVENCEncoder encoder;
         if (!encoder.Initialize(capturer.GetDevice(), encConfig)) {
@@ -210,13 +210,14 @@ int main() {
                 encConfig.frameRateDen = 1;
                 encConfig.bitRate = bitrate;
                 encConfig.maxBitRate = static_cast<uint32_t>(bitrate * 1.25);
-                encConfig.vbvBufferSize = static_cast<uint32_t>(bitrate / (fps ? fps : 60) * 1.5);
-                encConfig.intraRefreshPeriod = fps;
-                encConfig.intraRefreshDuration = std::max(6u, fps / 10);
+                encConfig.vbvBufferSize = static_cast<uint32_t>(bitrate / (fps ? fps : 120) * 1.5);
+                encConfig.enableIntraRefresh = true;
+                encConfig.intraRefreshPeriod = fps * 2;
+                encConfig.intraRefreshDuration = fps / 2;
 
-                std::cout << "[Host] Dynamic Reconfigure: " << fps << " FPS, "
-                          << (bitrate / 1'000'000) << " Mbps, Min Interval: "
-                          << sessionMinIntervalUs.load() << " us" << std::endl;
+                std::cout << "[Host] Soft Intra-Refresh WAN Pipeline: " << fps << " FPS, "
+                          << (bitrate / 1'000'000) << " Mbps (Duration: " 
+                          << encConfig.intraRefreshDuration << " frames)" << std::endl;
 
                 encoder.Shutdown();
                 encoder.Initialize(capturer.GetDevice(), encConfig);
