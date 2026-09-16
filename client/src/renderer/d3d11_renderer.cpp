@@ -332,6 +332,11 @@ bool D3D11Renderer::Initialize(HWND hwnd, uint32_t width, uint32_t height) {
     }
 
     hud_.Initialize(swapChain_.Get());
+
+    float clearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    context_->ClearRenderTargetView(renderTargetView_.Get(), clearColor);
+    swapChain_->Present(0, 0);
+
     return true;
 }
 
@@ -502,6 +507,10 @@ void D3D11Renderer::Resize(uint32_t width, uint32_t height) {
     CreateVideoProcessor();
     CreateRenderTarget();
     hud_.CreateDeviceResources();
+
+    float clearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    context_->ClearRenderTargetView(renderTargetView_.Get(), clearColor);
+    swapChain_->Present(0, 0);
 }
 
 bool D3D11Renderer::WaitForFrameLatency(DWORD timeoutMs) {

@@ -192,7 +192,6 @@ int main(int argc, char* argv[]) {
     });
 
     SPSCQueue<EncodedVideoPacket, 32> videoQueue;
-    std::atomic<size_t> videoQueueSize{0};
     HANDLE videoEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     std::atomic<bool> renderRunning{true};
     std::atomic<bool> pendingResize{false};
@@ -231,19 +230,13 @@ int main(int argc, char* argv[]) {
             }
 
             auto w0 = std::chrono::high_resolution_clock::now();
-            renderer.WaitForFrameLatency(100);
+            renderer.WaitForFrameLatency(50);
             auto w1 = std::chrono::high_resolution_clock::now();
             metrics.waitLatencyMs = std::chrono::duration<float, std::milli>(w1 - w0).count();
 
             EncodedVideoPacket pkt;
             while (videoQueue.Pop(pkt)) {
-                size_t remaining = 0;
-                if (videoQueueSize.load(std::memory_order_relaxed) > 0) {
-                    remaining = videoQueueSize.fetch_sub(1, std::memory_order_relaxed) - 1;
-                }
-                metrics.videoQueueSize = remaining;
-
-                bool isLatest = (remaining == 0) && videoQueue.Empty();
+                bool isLatest = videoQueue.Empty();
 
                 decodeStartTime = std::chrono::high_resolution_clock::now();
                 decoder.Decode(pkt.data.data(), pkt.data.size(), isLatest);
@@ -252,6 +245,8 @@ int main(int argc, char* argv[]) {
                     frameCount++;
                 }
             }
+
+            metrics.videoQueueSize = videoQueue.Size();
 
             auto now = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFpsTime).count();
@@ -279,7 +274,6 @@ int main(int argc, char* argv[]) {
         pkt.data.assign(data, data + size);
         pkt.captureTimestampUs = timestampUs;
         if (videoQueue.Push(std::move(pkt))) {
-            videoQueueSize.fetch_add(1, std::memory_order_relaxed);
             SetEvent(videoEvent);
         }
     });

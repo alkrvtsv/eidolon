@@ -67,6 +67,15 @@ public:
         return head_.load(std::memory_order_relaxed) == tail_.load(std::memory_order_relaxed);
     }
 
+    size_t Size() const {
+        const size_t currentHead = head_.load(std::memory_order_relaxed);
+        const size_t currentTail = tail_.load(std::memory_order_acquire);
+        if (currentTail >= currentHead) {
+            return currentTail - currentHead;
+        }
+        return buffer_.size() - (currentHead - currentTail);
+    }
+
 private:
     std::vector<T> buffer_;
     alignas(64) std::atomic<size_t> head_;
