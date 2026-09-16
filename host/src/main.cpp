@@ -200,7 +200,7 @@ int main() {
         audioCapturer.Start();
         std::cout << "[Host] Pipeline ready and running..." << std::endl;
 
-        constexpr auto kKeepAliveInterval = std::chrono::milliseconds(500);
+        constexpr auto kKeepAliveInterval = std::chrono::milliseconds(100);
         auto lastEncodeTime = std::chrono::steady_clock::now();
 
         while (true) {
@@ -226,8 +226,7 @@ int main() {
                 forceIDR = true;
             }
 
-            uint32_t currentFps = sessionFps.load();
-            uint32_t acquireTimeoutMs = std::max(5u, static_cast<uint32_t>(1000 / currentFps));
+            uint32_t acquireTimeoutMs = 2;
 
             ID3D11Texture2D* capturedTexture = nullptr;
             CaptureStatus status = capturer.AcquireFrame(&capturedTexture, acquireTimeoutMs);

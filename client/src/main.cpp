@@ -223,7 +223,7 @@ int main(int argc, char* argv[]) {
             }
 
             if (videoQueue.Empty()) {
-                WaitForSingleObject(videoEvent, 5);
+                WaitForSingleObject(videoEvent, 1);
                 if (videoQueue.Empty()) {
                     continue;
                 }
@@ -234,19 +234,20 @@ int main(int argc, char* argv[]) {
             auto w1 = std::chrono::high_resolution_clock::now();
             metrics.waitLatencyMs = std::chrono::duration<float, std::milli>(w1 - w0).count();
 
-            EncodedVideoPacket pkt;
-            while (videoQueue.Pop(pkt)) {
-                bool isLatest = videoQueue.Empty();
-
-                decodeStartTime = std::chrono::high_resolution_clock::now();
-                decoder.Decode(pkt.data.data(), pkt.data.size(), isLatest);
-
-                if (isLatest) {
-                    frameCount++;
+            while (videoQueue.Size() > 2) {
+                EncodedVideoPacket stalePkt;
+                if (videoQueue.Pop(stalePkt)) {
+                    decoder.Decode(stalePkt.data.data(), stalePkt.data.size(), false);
                 }
             }
 
-            metrics.videoQueueSize = videoQueue.Size();
+            EncodedVideoPacket pkt;
+            if (videoQueue.Pop(pkt)) {
+                metrics.videoQueueSize = videoQueue.Size();
+                decodeStartTime = std::chrono::high_resolution_clock::now();
+                decoder.Decode(pkt.data.data(), pkt.data.size(), true);
+                frameCount++;
+            }
 
             auto now = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFpsTime).count();
