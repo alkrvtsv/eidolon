@@ -148,6 +148,8 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
     accumBlt_ += metrics.bltTimeMs;
     accumPresent_ += metrics.presentTimeMs;
     accumWait_ += metrics.waitLatencyMs;
+    accumInterval_ += metrics.frameIntervalMs;
+    accumJitter_ += metrics.frameJitterMs;
     sampleCount_++;
 
     maxDecodeMs_ = (std::max)(maxDecodeMs_, metrics.decodeTimeMs);
@@ -155,6 +157,7 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
     maxBltMs_ = (std::max)(maxBltMs_, metrics.bltTimeMs);
     maxPresentMs_ = (std::max)(maxPresentMs_, metrics.presentTimeMs);
     maxWaitMs_ = (std::max)(maxWaitMs_, metrics.waitLatencyMs);
+    maxJitterMs_ = (std::max)(maxJitterMs_, metrics.frameJitterMs);
 
     if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastPeakResetTime_).count() >= 2000) {
         maxDecodeMs_ = metrics.decodeTimeMs;
@@ -162,6 +165,7 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
         maxBltMs_ = metrics.bltTimeMs;
         maxPresentMs_ = metrics.presentTimeMs;
         maxWaitMs_ = metrics.waitLatencyMs;
+        maxJitterMs_ = metrics.frameJitterMs;
         lastPeakResetTime_ = now;
     }
 
@@ -171,16 +175,19 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
         float avgBlt = sampleCount_ > 0 ? (accumBlt_ / sampleCount_) : metrics.bltTimeMs;
         float avgPresent = sampleCount_ > 0 ? (accumPresent_ / sampleCount_) : metrics.presentTimeMs;
         float avgWait = sampleCount_ > 0 ? (accumWait_ / sampleCount_) : metrics.waitLatencyMs;
+        float avgInterval = sampleCount_ > 0 ? (accumInterval_ / sampleCount_) : metrics.frameIntervalMs;
+        float avgJitter = sampleCount_ > 0 ? (accumJitter_ / sampleCount_) : metrics.frameJitterMs;
 
         std::wstringstream ss;
         ss << std::fixed << std::setprecision(1);
         ss << L"Eidolon HUD [Ctrl+Shift+H]\n";
         ss << L"FPS: " << metrics.fps << L"\n";
-        ss << L"Decode:  avg " << avgDecode << L" ms | max " << maxDecodeMs_ << L" ms\n";
-        ss << L"Render:  avg " << avgRender << L" ms | max " << maxRenderMs_ << L" ms\n";
-        ss << L"  Wait:  avg " << avgWait << L" ms | max " << maxWaitMs_ << L" ms\n";
-        ss << L"  Blt:   avg " << avgBlt << L" ms | max " << maxBltMs_ << L" ms\n";
-        ss << L"  Pres:  avg " << avgPresent << L" ms | max " << maxPresentMs_ << L" ms\n";
+        ss << L"Net Pace: " << avgInterval << L" ms (Jitter: " << avgJitter << L" ms, max " << maxJitterMs_ << L")\n";
+        ss << L"Decode:   avg " << avgDecode << L" ms | max " << maxDecodeMs_ << L" ms\n";
+        ss << L"Render:   avg " << avgRender << L" ms | max " << maxRenderMs_ << L" ms\n";
+        ss << L"  Wait:   avg " << avgWait << L" ms | max " << maxWaitMs_ << L" ms\n";
+        ss << L"  Blt:    avg " << avgBlt << L" ms | max " << maxBltMs_ << L" ms\n";
+        ss << L"  Pres:   avg " << avgPresent << L" ms | max " << maxPresentMs_ << L" ms\n";
         ss << L"Video Queue: " << metrics.videoQueueSize << L"\n";
         ss << L"Audio Buffer: " << metrics.audioQueuedMs << L" ms\n";
         ss << L"Host: " << metrics.hostWidth << L"x" << metrics.hostHeight << L"\n";
@@ -192,13 +199,15 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
         accumBlt_ = 0.0f;
         accumPresent_ = 0.0f;
         accumWait_ = 0.0f;
+        accumInterval_ = 0.0f;
+        accumJitter_ = 0.0f;
         sampleCount_ = 0;
         lastTextUpdateTime_ = now;
     }
 
     d2dRenderTarget_->BeginDraw();
 
-    D2D1_RECT_F bgRect = D2D1::RectF(14.0f, 14.0f, 350.0f, 350.0f);
+    D2D1_RECT_F bgRect = D2D1::RectF(14.0f, 14.0f, 370.0f, 360.0f);
     D2D1_ROUNDED_RECT roundedRect = D2D1::RoundedRect(bgRect, 6.0f, 6.0f);
     d2dRenderTarget_->FillRoundedRectangle(roundedRect, backgroundBrush_.Get());
 
@@ -207,8 +216,8 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
         cachedText_.c_str(),
         static_cast<UINT32>(cachedText_.length()),
         textFormat_.Get(),
-        330.0f,
-        210.0f,
+        350.0f,
+        220.0f,
         textLayout.GetAddressOf()
     );
 
@@ -218,8 +227,8 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
     }
 
     const float graphX = 24.0f;
-    const float graphY = 236.0f;
-    const float graphW = 312.0f;
+    const float graphY = 246.0f;
+    const float graphW = 332.0f;
     const float graphH = 80.0f;
     const float graphBottom = graphY + graphH;
 

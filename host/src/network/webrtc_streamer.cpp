@@ -160,7 +160,7 @@ void WebRTCStreamer::ProcessSignalingMessage(const std::string& msg) {
     }
 }
 
-bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size) {
+bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size, uint64_t captureTimestampUs) {
     if (!peerConnected_ || !videoChannel_ || !videoChannel_->isOpen() || !data || size == 0) {
         return false;
     }
@@ -183,6 +183,7 @@ bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size) {
             header.frameSize = static_cast<uint32_t>(size);
             header.chunkIndex = chunkIndex;
             header.totalChunks = totalChunks;
+            header.captureTimestampUs = captureTimestampUs;
 
             rtc::binary packet(sizeof(VideoChunkHeader) + chunkSize);
             std::memcpy(packet.data(), &header, sizeof(VideoChunkHeader));

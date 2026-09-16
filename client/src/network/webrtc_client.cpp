@@ -136,6 +136,7 @@ void WebRTCClient::ProcessVideoChunk(const uint8_t* data, size_t size) {
 
         activeFrameId_ = hdr->frameId;
         expectedFrameSize_ = hdr->frameSize;
+        activeCaptureTimestampUs_ = hdr->captureTimestampUs;
         totalChunks_ = hdr->totalChunks;
         receivedChunksCount_ = 0;
         frameCompleted_ = false;
@@ -173,7 +174,7 @@ void WebRTCClient::ProcessVideoChunk(const uint8_t* data, size_t size) {
                 }
 
                 if (videoCallback_) {
-                    videoCallback_(frameBuffer_.data(), expectedFrameSize_);
+                    videoCallback_(frameBuffer_.data(), expectedFrameSize_, activeCaptureTimestampUs_);
                 }
             }
         }
@@ -187,6 +188,7 @@ void WebRTCClient::Shutdown() noexcept {
 
     activeFrameId_ = 0;
     expectedFrameSize_ = 0;
+    activeCaptureTimestampUs_ = 0;
     totalChunks_ = 0;
     receivedChunksCount_ = 0;
     frameCompleted_ = false;

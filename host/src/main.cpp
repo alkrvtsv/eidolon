@@ -149,12 +149,14 @@ int main() {
         });
 
         std::atomic<uint64_t> sentFrames{0};
+        std::atomic<uint64_t> currentCaptureTimestampUs{0};
+
         encoder.SetEncodedFrameCallback([&](const uint8_t* data, size_t size) {
             sentFrames++;
             if (sentFrames == 1 || sentFrames % 120 == 0) {
                 std::cout << "[Host Pipeline] Sent Frame #" << sentFrames << " (" << size << " bytes)" << std::endl;
             }
-            if (!streamer.SendVideoFrame(data, size)) {
+            if (!streamer.SendVideoFrame(data, size, currentCaptureTimestampUs.load(std::memory_order_relaxed))) {
                 forceIDR = true;
             }
         });
@@ -262,6 +264,9 @@ int main() {
                     continue;
                 }
 
+                auto nowUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count());
+                currentCaptureTimestampUs.store(nowUs, std::memory_order_relaxed);
+
                 ID3D11Texture2D* nv12Texture = nullptr;
                 if (converter.Convert(capturedTexture, &nv12Texture)) {
                     lastValidNV12.Reset();
@@ -278,6 +283,9 @@ int main() {
             } else if (status == CaptureStatus::Timeout) {
                 auto elapsedSinceLast = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastEncodeTime);
                 if (elapsedSinceLast >= kKeepAliveInterval && lastValidNV12) {
+                    auto nowUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count());
+                    currentCaptureTimestampUs.store(nowUs, std::memory_order_relaxed);
+
                     bool needIDR = forceIDR.exchange(false);
                     encoder.EncodeFrame(lastValidNV12.Get(), needIDR);
                     lastEncodeTime = now;

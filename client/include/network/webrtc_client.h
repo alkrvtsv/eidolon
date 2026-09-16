@@ -25,7 +25,7 @@ public:
     void SetSignalingSender(std::function<void(const std::string&)> callback) {
         signalingSend_ = std::move(callback);
     }
-    void SetVideoCallback(std::function<void(const uint8_t* data, size_t size)> callback) {
+    void SetVideoCallback(std::function<void(const uint8_t* data, size_t size, uint64_t timestampUs)> callback) {
         videoCallback_ = std::move(callback);
     }
     void SetAudioCallback(std::function<void(const uint8_t* data, size_t size)> callback) {
@@ -61,6 +61,7 @@ private:
 
     uint32_t activeFrameId_{0};
     uint32_t expectedFrameSize_{0};
+    uint64_t activeCaptureTimestampUs_{0};
     uint16_t totalChunks_{0};
     uint16_t receivedChunksCount_{0};
     bool frameCompleted_{false};
@@ -69,7 +70,7 @@ private:
     std::vector<bool> receivedChunksMask_;
 
     std::function<void(const std::string&)> signalingSend_;
-    std::function<void(const uint8_t* data, size_t size)> videoCallback_;
+    std::function<void(const uint8_t* data, size_t size, uint64_t timestampUs)> videoCallback_;
     std::function<void(const uint8_t* data, size_t size)> audioCallback_;
     std::function<void(const CursorShapeMessage&, const uint8_t*)> cursorShapeCallback_;
     std::function<void(const CursorPositionMessage&)> cursorPositionCallback_;

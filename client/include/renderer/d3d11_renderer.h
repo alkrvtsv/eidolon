@@ -22,6 +22,8 @@ struct PerformanceMetrics {
     float bltTimeMs{0.0f};
     float presentTimeMs{0.0f};
     float waitLatencyMs{0.0f};
+    float frameIntervalMs{0.0f};
+    float frameJitterMs{0.0f};
     size_t videoQueueSize{0};
     uint32_t audioQueuedMs{0};
     uint32_t hostWidth{0};
@@ -73,11 +75,14 @@ private:
     float maxBltMs_{0.0f};
     float maxPresentMs_{0.0f};
     float maxWaitMs_{0.0f};
+    float maxJitterMs_{0.0f};
     float accumDecode_{0.0f};
     float accumRender_{0.0f};
     float accumBlt_{0.0f};
     float accumPresent_{0.0f};
     float accumWait_{0.0f};
+    float accumInterval_{0.0f};
+    float accumJitter_{0.0f};
     uint32_t sampleCount_{0};
 
     std::array<float, kGraphHistorySize> renderHistory_{};

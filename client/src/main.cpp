@@ -18,12 +18,14 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <windows.h>
 
 using json = nlohmann::json;
 
 struct EncodedVideoPacket {
     std::vector<uint8_t> data;
+    uint64_t captureTimestampUs{0};
 };
 
 static void EnableHighDPI() {
@@ -167,11 +169,6 @@ int main(int argc, char* argv[]) {
         metrics.hostWidth = frame.width;
         metrics.hostHeight = frame.height;
 
-        auto w0 = std::chrono::high_resolution_clock::now();
-        renderer.WaitForFrameLatency(100);
-        auto w1 = std::chrono::high_resolution_clock::now();
-        metrics.waitLatencyMs = std::chrono::duration<float, std::milli>(w1 - w0).count();
-
         auto t0 = std::chrono::high_resolution_clock::now();
         renderer.RenderFrame(frame, metrics);
         auto t1 = std::chrono::high_resolution_clock::now();
@@ -182,6 +179,9 @@ int main(int argc, char* argv[]) {
             if (logFile.is_open()) {
                 loggedFrameIndex++;
                 logFile << loggedFrameIndex << ","
+                        << metrics.frameIntervalMs << ","
+                        << metrics.frameJitterMs << ","
+                        << metrics.waitLatencyMs << ","
                         << metrics.decodeTimeMs << ","
                         << metrics.bltTimeMs << ","
                         << metrics.presentTimeMs << ","
@@ -199,6 +199,9 @@ int main(int argc, char* argv[]) {
     std::atomic<bool> toggleHudRequested{false};
     std::atomic<uint32_t> targetWidth{windowWidth};
     std::atomic<uint32_t> targetHeight{windowHeight};
+
+    const float targetIntervalMs = 1000.0f / static_cast<float>(screenRefreshRate > 0 ? screenRefreshRate : 60);
+    auto lastPacketReceiveTime = std::chrono::steady_clock::now();
 
     std::thread renderThread([&]() {
         MMCSSScopedTask mmcss(L"Games");
@@ -220,10 +223,20 @@ int main(int argc, char* argv[]) {
                 renderer.ToggleHUD();
             }
 
+            if (videoQueue.Empty()) {
+                WaitForSingleObject(videoEvent, 5);
+                if (videoQueue.Empty()) {
+                    continue;
+                }
+            }
+
+            auto w0 = std::chrono::high_resolution_clock::now();
+            renderer.WaitForFrameLatency(100);
+            auto w1 = std::chrono::high_resolution_clock::now();
+            metrics.waitLatencyMs = std::chrono::duration<float, std::milli>(w1 - w0).count();
+
             EncodedVideoPacket pkt;
-            bool popped = false;
             while (videoQueue.Pop(pkt)) {
-                popped = true;
                 size_t remaining = 0;
                 if (videoQueueSize.load(std::memory_order_relaxed) > 0) {
                     remaining = videoQueueSize.fetch_sub(1, std::memory_order_relaxed) - 1;
@@ -247,10 +260,6 @@ int main(int argc, char* argv[]) {
                 frameCount = 0;
                 lastFpsTime = now;
             }
-
-            if (!popped) {
-                WaitForSingleObject(videoEvent, 10);
-            }
         }
     });
 
@@ -258,9 +267,17 @@ int main(int argc, char* argv[]) {
         client.SendInputData(data, size);
     });
 
-    client.SetVideoCallback([&](const uint8_t* data, size_t size) {
+    client.SetVideoCallback([&](const uint8_t* data, size_t size, uint64_t timestampUs) {
+        auto now = std::chrono::steady_clock::now();
+        float interval = std::chrono::duration<float, std::milli>(now - lastPacketReceiveTime).count();
+        lastPacketReceiveTime = now;
+
+        metrics.frameIntervalMs = interval;
+        metrics.frameJitterMs = std::abs(interval - targetIntervalMs);
+
         EncodedVideoPacket pkt;
         pkt.data.assign(data, data + size);
+        pkt.captureTimestampUs = timestampUs;
         if (videoQueue.Push(std::move(pkt))) {
             videoQueueSize.fetch_add(1, std::memory_order_relaxed);
             SetEvent(videoEvent);
@@ -321,7 +338,7 @@ int main(int argc, char* argv[]) {
                         std::lock_guard<std::mutex> lock(logMutex);
                         logFile.open("perf_log.csv", std::ios::out | std::ios::trunc);
                         if (logFile.is_open()) {
-                            logFile << "frame_index,decode_ms,blt_ms,present_ms,render_ms,queue_size\n";
+                            logFile << "frame_index,interval_ms,jitter_ms,wait_ms,decode_ms,blt_ms,present_ms,render_ms,queue_size\n";
                             loggedFrameIndex = 0;
                             isLogging.store(true);
                             std::cout << "[Client] Started CSV logging to perf_log.csv" << std::endl;
