@@ -241,7 +241,7 @@ bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size, uint64_t c
             nals.push_back({prevNalPayloadStart, size - prevNalPayloadStart});
         }
 
-        constexpr size_t kMaxRtpPayload = 1180;
+        constexpr size_t kMaxRtpPayload = 1120;
 
         for (size_t nalIdx = 0; nalIdx < nals.size(); ++nalIdx) {
             const auto& nal = nals[nalIdx];
