@@ -46,6 +46,8 @@ bool FFmpegD3D11VADecoder::Initialize(ID3D11Device* device, ID3D11DeviceContext*
 
     Shutdown();
 
+    av_log_set_level(AV_LOG_WARNING);
+
     device_ = device;
     context_ = context;
 

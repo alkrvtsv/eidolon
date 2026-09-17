@@ -103,7 +103,7 @@ bool WebRTCClient::Initialize() {
 }
 
 void WebRTCClient::DispatchAssembledFrame() {
-    if (!assembledFrameBuffer_.empty()) {
+    if (!assembledFrameBuffer_.empty() && !isFrameCorrupted_) {
         if (!receivedSpsPps_) {
             const uint8_t* buf = assembledFrameBuffer_.data();
             size_t bufSize = assembledFrameBuffer_.size();
@@ -126,13 +126,32 @@ void WebRTCClient::DispatchAssembledFrame() {
             videoCallback_(assembledFrameBuffer_.data(), assembledFrameBuffer_.size(), captureTsUs);
         }
     }
+
     assembledFrameBuffer_.clear();
     fuBuffer_.clear();
     hasFrameData_ = false;
+    isFrameCorrupted_ = false;
 }
 
 void WebRTCClient::ProcessRtpPacket(const uint8_t* data, size_t size) {
     if (!data || size < 12) return;
+
+    uint16_t seq = (static_cast<uint16_t>(data[2]) << 8) | static_cast<uint16_t>(data[3]);
+    if (hasLastSequenceNumber_) {
+        uint16_t diff = seq - lastSequenceNumber_;
+        if (diff > 1 && diff < 30000) {
+            uint16_t lost = diff - 1;
+            lostPacketCount_ += lost;
+            isFrameCorrupted_ = true;
+            fuBuffer_.clear();
+            std::cerr << "[WebRTC RTP DROP] Lost " << lost << " packets! Frame corrupted. Expected seq: "
+                      << static_cast<uint16_t>(lastSequenceNumber_ + 1)
+                      << ", got: " << seq
+                      << " (Total lost: " << lostPacketCount_ << ")" << std::endl;
+        }
+    }
+    lastSequenceNumber_ = seq;
+    hasLastSequenceNumber_ = true;
 
     bool marker = (data[1] & 0x80) != 0;
     uint32_t rtpTimestamp = (static_cast<uint32_t>(data[4]) << 24) |
@@ -150,6 +169,13 @@ void WebRTCClient::ProcessRtpPacket(const uint8_t* data, size_t size) {
 
     currentFrameTimestamp_ = rtpTimestamp;
     hasFrameData_ = true;
+
+    if (isFrameCorrupted_) {
+        if (marker) {
+            DispatchAssembledFrame();
+        }
+        return;
+    }
 
     uint8_t nalType = payload[0] & 0x1F;
 
@@ -199,7 +225,11 @@ void WebRTCClient::Shutdown() noexcept {
     fuBuffer_.clear();
     hasFrameData_ = false;
     receivedSpsPps_ = false;
+    isFrameCorrupted_ = false;
     currentFrameTimestamp_ = 0;
+    hasLastSequenceNumber_ = false;
+    lastSequenceNumber_ = 0;
+    lostPacketCount_ = 0;
 
     if (videoTrack_) { videoTrack_->close(); videoTrack_.reset(); }
     if (inputChannel_) { inputChannel_->close(); inputChannel_.reset(); }

@@ -64,6 +64,11 @@ private:
     uint32_t currentFrameTimestamp_{0};
     bool hasFrameData_{false};
     bool receivedSpsPps_{false};
+    bool isFrameCorrupted_{false};
+
+    uint16_t lastSequenceNumber_{0};
+    bool hasLastSequenceNumber_{false};
+    uint64_t lostPacketCount_{0};
 
     std::function<void(const std::string&)> signalingSend_;
     std::function<void(const uint8_t* data, size_t size, uint64_t timestampUs)> videoCallback_;
