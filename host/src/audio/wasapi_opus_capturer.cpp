@@ -30,21 +30,40 @@ bool WasapiOpusCapturer::Initialize() {
     Shutdown();
 
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (SUCCEEDED(hr)) {
+        comInitialized_ = true;
+    } else if (hr == RPC_E_CHANGED_MODE) {
+        comInitialized_ = false;
+    } else {
+        return false;
+    }
 
     ComPtr<IMMDeviceEnumerator> enumerator;
     hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        Shutdown();
+        return false;
+    }
 
     ComPtr<IMMDevice> device;
     hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        Shutdown();
+        return false;
+    }
 
     hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &audioClient_);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        Shutdown();
+        return false;
+    }
 
     WAVEFORMATEX* mixFormat = nullptr;
     hr = audioClient_->GetMixFormat(&mixFormat);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        Shutdown();
+        return false;
+    }
 
     channels_ = mixFormat->nChannels;
     sampleRate_ = mixFormat->nSamplesPerSec;
@@ -67,10 +86,16 @@ bool WasapiOpusCapturer::Initialize() {
     );
 
     CoTaskMemFree(mixFormat);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        Shutdown();
+        return false;
+    }
 
     hr = audioClient_->GetService(IID_PPV_ARGS(&captureClient_));
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        Shutdown();
+        return false;
+    }
 
     AVSampleFormat inSampleFmt = AV_SAMPLE_FMT_FLT;
     if (!isFloat_) {
@@ -154,6 +179,10 @@ void WasapiOpusCapturer::Shutdown() noexcept {
     }
     captureClient_.Reset();
     audioClient_.Reset();
+    if (comInitialized_) {
+        CoUninitialize();
+        comInitialized_ = false;
+    }
 }
 
 bool WasapiOpusCapturer::Start() {
@@ -170,12 +199,20 @@ bool WasapiOpusCapturer::Start() {
     }
 
     captureThread_ = std::thread([this]() {
-        CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        bool threadComInit = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
         timeBeginPeriod(1);
 
-        const int OPUS_FRAME_SIZE = 960;
-        std::vector<float> pcmBuffer;
-        pcmBuffer.reserve(48000);
+        constexpr int kOpusFrameSize = 960;
+        constexpr size_t kOpusFrameFloats = static_cast<size_t>(kOpusFrameSize * 2);
+        constexpr size_t kRingBufferCapacity = 48000 * 2;
+        constexpr size_t kMaxResampleFloats = 8192 * 2;
+
+        std::vector<float> ringBuffer(kRingBufferCapacity, 0.0f);
+        size_t ringReadPos = 0;
+        size_t ringAvailable = 0;
+
+        std::vector<float> resampleOutBuffer(kMaxResampleFloats, 0.0f);
+        std::vector<float> encodeFrameBuffer(kOpusFrameFloats, 0.0f);
         std::vector<uint8_t> opusPacket(4000);
 
         while (running_) {
@@ -195,41 +232,57 @@ bool WasapiOpusCapturer::Start() {
                 hrPacket = captureClient_->GetBuffer(&data, &numFrames, &flags, nullptr, nullptr);
                 if (FAILED(hrPacket)) break;
 
+                int convertedSamples = 0;
+
                 if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
                     int64_t dstSamples = av_rescale_rnd(numFrames, 48000, sampleRate_, AV_ROUND_UP);
-                    pcmBuffer.insert(pcmBuffer.end(), static_cast<size_t>(dstSamples * 2), 0.0f);
+                    convertedSamples = static_cast<int>(std::min<int64_t>(dstSamples, kMaxResampleFloats / 2));
+                    std::fill(resampleOutBuffer.begin(), resampleOutBuffer.begin() + (convertedSamples * 2), 0.0f);
                 } else if (data && swrCtx_) {
                     int maxOutSamples = swr_get_out_samples(swrCtx_, static_cast<int>(numFrames));
-                    if (maxOutSamples > 0) {
-                        std::vector<float> converted(static_cast<size_t>(maxOutSamples * 2));
-                        uint8_t* outData[1] = { reinterpret_cast<uint8_t*>(converted.data()) };
+                    if (maxOutSamples > 0 && static_cast<size_t>(maxOutSamples * 2) <= kMaxResampleFloats) {
+                        uint8_t* outData[1] = { reinterpret_cast<uint8_t*>(resampleOutBuffer.data()) };
                         const uint8_t* inData[1] = { data };
 
-                        int convertedSamples = swr_convert(
+                        convertedSamples = swr_convert(
                             swrCtx_,
                             outData,
                             maxOutSamples,
                             inData,
                             static_cast<int>(numFrames)
                         );
-
-                        if (convertedSamples > 0) {
-                            pcmBuffer.insert(
-                                pcmBuffer.end(),
-                                converted.data(),
-                                converted.data() + (convertedSamples * 2)
-                            );
-                        }
                     }
                 }
 
                 captureClient_->ReleaseBuffer(numFrames);
 
-                while (pcmBuffer.size() >= static_cast<size_t>(OPUS_FRAME_SIZE * 2)) {
+                if (convertedSamples > 0) {
+                    size_t convertedFloats = static_cast<size_t>(convertedSamples * 2);
+                    size_t writePos = (ringReadPos + ringAvailable) % kRingBufferCapacity;
+
+                    for (size_t i = 0; i < convertedFloats; ++i) {
+                        if (ringAvailable < kRingBufferCapacity) {
+                            ringBuffer[writePos] = resampleOutBuffer[i];
+                            writePos = (writePos + 1) % kRingBufferCapacity;
+                            ringAvailable++;
+                        } else {
+                            ringBuffer[ringReadPos] = resampleOutBuffer[i];
+                            ringReadPos = (ringReadPos + 1) % kRingBufferCapacity;
+                        }
+                    }
+                }
+
+                while (ringAvailable >= kOpusFrameFloats) {
+                    for (size_t i = 0; i < kOpusFrameFloats; ++i) {
+                        encodeFrameBuffer[i] = ringBuffer[(ringReadPos + i) % kRingBufferCapacity];
+                    }
+                    ringReadPos = (ringReadPos + kOpusFrameFloats) % kRingBufferCapacity;
+                    ringAvailable -= kOpusFrameFloats;
+
                     opus_int32 encodedBytes = opus_encode_float(
                         opusEncoder_,
-                        pcmBuffer.data(),
-                        OPUS_FRAME_SIZE,
+                        encodeFrameBuffer.data(),
+                        kOpusFrameSize,
                         opusPacket.data(),
                         static_cast<opus_int32>(opusPacket.size())
                     );
@@ -237,8 +290,6 @@ bool WasapiOpusCapturer::Start() {
                     if (encodedBytes > 0 && encodedAudioCallback_) {
                         encodedAudioCallback_(opusPacket.data(), static_cast<size_t>(encodedBytes));
                     }
-
-                    pcmBuffer.erase(pcmBuffer.begin(), pcmBuffer.begin() + (OPUS_FRAME_SIZE * 2));
                 }
 
                 captureClient_->GetNextPacketSize(&packetLength);
@@ -246,7 +297,9 @@ bool WasapiOpusCapturer::Start() {
         }
 
         timeEndPeriod(1);
-        CoUninitialize();
+        if (threadComInit) {
+            CoUninitialize();
+        }
     });
 
     return true;

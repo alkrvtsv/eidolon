@@ -39,6 +39,7 @@ private:
     uint32_t sampleRate_{48000};
     uint16_t bitsPerSample_{32};
     bool isFloat_{true};
+    bool comInitialized_{false};
 
     std::atomic<bool> running_{false};
     std::thread captureThread_;
