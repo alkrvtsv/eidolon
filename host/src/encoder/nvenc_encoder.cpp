@@ -15,6 +15,8 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     device_ = device;
     device_->GetImmediateContext(&context_);
     config_ = config;
+    currentSlot_ = 0;
+    lastValidSlot_ = -1;
 
     nvencModule_ = LoadLibraryW(L"nvEncodeAPI64.dll");
     if (!nvencModule_) {
@@ -132,8 +134,17 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     texDesc.CPUAccessFlags = 0;
     texDesc.MiscFlags = 0;
 
+    D3D11_QUERY_DESC queryDesc = {};
+    queryDesc.Query = D3D11_QUERY_EVENT;
+
     for (int i = 0; i < kSlotCount; ++i) {
         HRESULT hr = device_->CreateTexture2D(&texDesc, nullptr, &slots_[i].inputTexture);
+        if (FAILED(hr)) {
+            Shutdown();
+            return false;
+        }
+
+        hr = device_->CreateQuery(&queryDesc, &slots_[i].completionQuery);
         if (FAILED(hr)) {
             Shutdown();
             return false;
@@ -181,6 +192,7 @@ void NVENCEncoder::Shutdown() noexcept {
                 nvApi_->nvEncDestroyBitstreamBuffer(encoder_, slot.bitstreamBuffer);
                 slot.bitstreamBuffer = nullptr;
             }
+            slot.completionQuery.Reset();
             slot.inputTexture.Reset();
         }
         nvApi_->nvEncDestroyEncoder(encoder_);
@@ -194,16 +206,27 @@ void NVENCEncoder::Shutdown() noexcept {
 
     context_.Reset();
     device_.Reset();
+    lastValidSlot_ = -1;
+    currentSlot_ = 0;
 }
 
-bool NVENCEncoder::EncodeFrame(ID3D11Texture2D* texture, bool forceIDR) {
-    if (!nvApi_ || !encoder_ || !texture || !context_) {
+ID3D11Texture2D* NVENCEncoder::GetNextInputTexture() {
+    return slots_[currentSlot_].inputTexture.Get();
+}
+
+bool NVENCEncoder::EncodeSlot(int slotIndex, bool forceIDR) {
+    if (!nvApi_ || !encoder_ || slotIndex < 0 || slotIndex >= kSlotCount) {
         return false;
     }
 
-    auto& slot = slots_[currentSlot_];
+    auto& slot = slots_[slotIndex];
 
-    context_->CopyResource(slot.inputTexture.Get(), texture);
+    if (context_ && slot.completionQuery) {
+        context_->End(slot.completionQuery.Get());
+        BOOL queryData = FALSE;
+        while (context_->GetData(slot.completionQuery.Get(), &queryData, sizeof(BOOL), 0) == S_FALSE) {
+        }
+    }
 
     NV_ENC_MAP_INPUT_RESOURCE mapInput = {};
     mapInput.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
@@ -250,6 +273,32 @@ bool NVENCEncoder::EncodeFrame(ID3D11Texture2D* texture, bool forceIDR) {
     nvApi_->nvEncUnmapInputResource(encoder_, slot.mappedResource);
     slot.mappedResource = nullptr;
 
-    currentSlot_ = (currentSlot_ + 1) % kSlotCount;
     return true;
+}
+
+bool NVENCEncoder::EncodeCurrentSlot(bool forceIDR) {
+    bool success = EncodeSlot(currentSlot_, forceIDR);
+    if (success) {
+        lastValidSlot_ = currentSlot_;
+        currentSlot_ = (currentSlot_ + 1) % kSlotCount;
+    }
+    return success;
+}
+
+bool NVENCEncoder::EncodeLastValidSlot(bool forceIDR) {
+    if (lastValidSlot_ < 0) {
+        return false;
+    }
+    return EncodeSlot(lastValidSlot_, forceIDR);
+}
+
+bool NVENCEncoder::EncodeFrame(ID3D11Texture2D* texture, bool forceIDR) {
+    if (!nvApi_ || !encoder_ || !texture || !context_) {
+        return false;
+    }
+
+    auto& slot = slots_[currentSlot_];
+    context_->CopyResource(slot.inputTexture.Get(), texture);
+
+    return EncodeCurrentSlot(forceIDR);
 }

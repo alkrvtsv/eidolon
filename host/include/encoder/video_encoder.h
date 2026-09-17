@@ -26,6 +26,9 @@ public:
     virtual void Shutdown() noexcept = 0;
 
     virtual bool EncodeFrame(ID3D11Texture2D* pTexture, bool forceIDR) = 0;
+    virtual ID3D11Texture2D* GetNextInputTexture() = 0;
+    virtual bool EncodeCurrentSlot(bool forceIDR) = 0;
+    virtual bool EncodeLastValidSlot(bool forceIDR) = 0;
     virtual void SetEncodedFrameCallback(std::function<void(const uint8_t* data, size_t size)> callback) = 0;
 
     virtual uint32_t GetWidth() const = 0;

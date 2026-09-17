@@ -11,6 +11,7 @@ public:
     virtual void Shutdown() = 0;
 
     virtual bool Convert(ID3D11Texture2D* pInputTexture, ID3D11Texture2D** ppOutputTexture) = 0;
+    virtual bool ConvertTo(ID3D11Texture2D* pInputTexture, ID3D11Texture2D* pOutputTexture) = 0;
 
     virtual uint32_t GetWidth() const = 0;
     virtual uint32_t GetHeight() const = 0;

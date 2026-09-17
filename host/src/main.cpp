@@ -173,16 +173,17 @@ int main() {
             streamer.SendCursorPosition(pos);
         });
 
-        ComPtr<ID3D11Texture2D> lastValidNV12;
+        bool hasInitialFrame = false;
 
         std::cout << "[Host] Waiting for initial desktop frame..." << std::endl;
-        while (!lastValidNV12) {
+        while (!hasInitialFrame) {
             ID3D11Texture2D* capturedTexture = nullptr;
             CaptureStatus status = capturer.AcquireFrame(&capturedTexture, 50);
             if (status == CaptureStatus::Success && capturedTexture) {
-                ID3D11Texture2D* nv12 = nullptr;
-                if (converter.Convert(capturedTexture, &nv12)) {
-                    lastValidNV12.Attach(nv12);
+                ID3D11Texture2D* nextSlotTex = encoder.GetNextInputTexture();
+                if (nextSlotTex && converter.ConvertTo(capturedTexture, nextSlotTex)) {
+                    encoder.EncodeCurrentSlot(true);
+                    hasInitialFrame = true;
                 }
                 capturedTexture->Release();
                 capturer.ReleaseFrame();
@@ -223,6 +224,8 @@ int main() {
 
                 encoder.Shutdown();
                 encoder.Initialize(capturer.GetDevice(), encConfig);
+                converter.Shutdown();
+                converter.Initialize(capturer.GetDevice(), capturer.GetContext(), capturer.GetWidth(), capturer.GetHeight());
                 forceIDR = true;
             }
 
@@ -233,7 +236,6 @@ int main() {
 
             if (status == CaptureStatus::AccessLost || status == CaptureStatus::Error) {
                 std::cout << "[Host WARNING] DXGI Access Lost -> Reinitializing pipeline..." << std::endl;
-                lastValidNV12.Reset();
                 capturer.Shutdown();
 
                 while (!capturer.Initialize()) {
@@ -266,27 +268,28 @@ int main() {
                 auto nowUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count());
                 currentCaptureTimestampUs.store(nowUs, std::memory_order_relaxed);
 
-                ID3D11Texture2D* nv12Texture = nullptr;
-                if (converter.Convert(capturedTexture, &nv12Texture)) {
-                    lastValidNV12.Reset();
-                    lastValidNV12.Attach(nv12Texture);
+                ID3D11Texture2D* nextSlotTex = encoder.GetNextInputTexture();
+                bool converted = false;
+                if (nextSlotTex) {
+                    converted = converter.ConvertTo(capturedTexture, nextSlotTex);
                 }
+
                 capturedTexture->Release();
                 capturer.ReleaseFrame();
 
-                if (lastValidNV12) {
+                if (converted) {
                     bool needIDR = forceIDR.exchange(false);
-                    encoder.EncodeFrame(lastValidNV12.Get(), needIDR);
+                    encoder.EncodeCurrentSlot(needIDR);
                     lastEncodeTime = now;
                 }
             } else if (status == CaptureStatus::Timeout) {
                 auto elapsedSinceLast = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastEncodeTime);
-                if (elapsedSinceLast >= kKeepAliveInterval && lastValidNV12) {
+                if (elapsedSinceLast >= kKeepAliveInterval) {
                     auto nowUs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count());
                     currentCaptureTimestampUs.store(nowUs, std::memory_order_relaxed);
 
                     bool needIDR = forceIDR.exchange(false);
-                    encoder.EncodeFrame(lastValidNV12.Get(), needIDR);
+                    encoder.EncodeLastValidSlot(needIDR);
                     lastEncodeTime = now;
                 }
             }

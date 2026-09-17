@@ -18,6 +18,10 @@ public:
     void Shutdown() noexcept override;
 
     bool EncodeFrame(ID3D11Texture2D* texture, bool forceIDR) override;
+    ID3D11Texture2D* GetNextInputTexture() override;
+    bool EncodeCurrentSlot(bool forceIDR) override;
+    bool EncodeLastValidSlot(bool forceIDR) override;
+
     void SetEncodedFrameCallback(std::function<void(const uint8_t*, size_t)> callback) override {
         encodedCallback_ = std::move(callback);
     }
@@ -30,10 +34,13 @@ private:
 
     struct ResourceSlot {
         ComPtr<ID3D11Texture2D> inputTexture;
+        ComPtr<ID3D11Query> completionQuery;
         NV_ENC_REGISTERED_PTR registeredResource{nullptr};
         NV_ENC_INPUT_PTR mappedResource{nullptr};
         NV_ENC_OUTPUT_PTR bitstreamBuffer{nullptr};
     };
+
+    bool EncodeSlot(int slotIndex, bool forceIDR);
 
     HMODULE nvencModule_{nullptr};
     std::unique_ptr<NV_ENCODE_API_FUNCTION_LIST> nvApi_;
@@ -46,6 +53,7 @@ private:
 
     std::array<ResourceSlot, kSlotCount> slots_{};
     int currentSlot_{0};
+    int lastValidSlot_{-1};
 
     std::function<void(const uint8_t*, size_t)> encodedCallback_;
 };

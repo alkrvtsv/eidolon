@@ -3,6 +3,7 @@
 #include "color_converter/color_converter.h"
 #include <d3d11_1.h>
 #include <wrl/client.h>
+#include <unordered_map>
 
 using Microsoft::WRL::ComPtr;
 
@@ -15,6 +16,7 @@ public:
     void Shutdown() override;
 
     bool Convert(ID3D11Texture2D* pInputTexture, ID3D11Texture2D** ppOutputTexture) override;
+    bool ConvertTo(ID3D11Texture2D* pInputTexture, ID3D11Texture2D* pOutputTexture) override;
 
     uint32_t GetWidth() const override { return width_; }
     uint32_t GetHeight() const override { return height_; }
@@ -22,6 +24,7 @@ public:
 private:
     bool CreateOutputResources();
     bool InitializeVideoPipeline();
+    ID3D11VideoProcessorOutputView* GetOrCreateOutputView(ID3D11Texture2D* texture);
 
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;
@@ -32,6 +35,7 @@ private:
 
     ComPtr<ID3D11Texture2D> outputTextureNV12_;
     ComPtr<ID3D11VideoProcessorOutputView> outputView_;
+    std::unordered_map<ID3D11Texture2D*, ComPtr<ID3D11VideoProcessorOutputView>> outputViewsCache_;
 
     uint32_t width_{0};
     uint32_t height_{0};
