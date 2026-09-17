@@ -7,6 +7,7 @@
 #include <atomic>
 #include <string>
 #include <vector>
+#include <map>
 #include <utility>
 
 class WebRTCClient {
@@ -41,8 +42,20 @@ public:
     bool IsConnected() const { return connected_; }
 
 private:
-    void ProcessRtpPacket(const uint8_t* data, size_t size);
+    void OnRtpPacketReceived(const uint8_t* data, size_t size);
+    void DrainReorderBuffer();
+    void ProcessOrderedPacket(const uint8_t* data, size_t size);
     void DispatchAssembledFrame();
+
+    static bool SequenceLessThan(uint16_t s1, uint16_t s2) noexcept {
+        return static_cast<int16_t>(s1 - s2) < 0;
+    }
+
+    struct SequenceComparator {
+        bool operator()(uint16_t s1, uint16_t s2) const noexcept {
+            return SequenceLessThan(s1, s2);
+        }
+    };
 
     std::shared_ptr<rtc::PeerConnection> pc_;
     std::shared_ptr<rtc::Track> videoTrack_;
@@ -59,6 +72,10 @@ private:
     ClientConfigMessage pendingConfig_{};
     bool hasPendingConfig_{false};
 
+    std::map<uint16_t, std::vector<uint8_t>, SequenceComparator> reorderBuffer_;
+    uint16_t nextExpectedSeq_{0};
+    bool hasExpectedSeq_{false};
+
     std::vector<uint8_t> assembledFrameBuffer_;
     std::vector<uint8_t> fuBuffer_;
     uint32_t currentFrameTimestamp_{0};
@@ -66,8 +83,6 @@ private:
     bool receivedSpsPps_{false};
     bool isFrameCorrupted_{false};
 
-    uint16_t lastSequenceNumber_{0};
-    bool hasLastSequenceNumber_{false};
     uint64_t lostPacketCount_{0};
 
     std::function<void(const std::string&)> signalingSend_;

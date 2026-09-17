@@ -40,7 +40,7 @@ bool WebRTCClient::Initialize() {
         videoTrack_->onMessage([this](std::variant<rtc::binary, std::string> data) {
             if (std::holds_alternative<rtc::binary>(data)) {
                 const auto& bin = std::get<rtc::binary>(data);
-                ProcessRtpPacket(reinterpret_cast<const uint8_t*>(bin.data()), bin.size());
+                OnRtpPacketReceived(reinterpret_cast<const uint8_t*>(bin.data()), bin.size());
             }
         });
     });
@@ -102,6 +102,54 @@ bool WebRTCClient::Initialize() {
     return true;
 }
 
+void WebRTCClient::OnRtpPacketReceived(const uint8_t* data, size_t size) {
+    if (!data || size < 12) return;
+
+    uint16_t seq = (static_cast<uint16_t>(data[2]) << 8) | static_cast<uint16_t>(data[3]);
+
+    if (!hasExpectedSeq_) {
+        nextExpectedSeq_ = seq;
+        hasExpectedSeq_ = true;
+    }
+
+    if (SequenceLessThan(seq, nextExpectedSeq_)) {
+        return;
+    }
+
+    reorderBuffer_[seq].assign(data, data + size);
+    DrainReorderBuffer();
+}
+
+void WebRTCClient::DrainReorderBuffer() {
+    constexpr size_t kMaxReorderWindow = 16;
+
+    while (!reorderBuffer_.empty()) {
+        auto it = reorderBuffer_.begin();
+        uint16_t seq = it->first;
+
+        if (seq == nextExpectedSeq_) {
+            ProcessOrderedPacket(it->second.data(), it->second.size());
+            nextExpectedSeq_ = static_cast<uint16_t>(seq + 1);
+            reorderBuffer_.erase(it);
+        } else if (reorderBuffer_.size() >= kMaxReorderWindow) {
+            uint16_t lost = static_cast<uint16_t>(seq - nextExpectedSeq_);
+            lostPacketCount_ += lost;
+            isFrameCorrupted_ = true;
+            fuBuffer_.clear();
+
+            std::cerr << "[WebRTC RTP DROP] Lost " << lost << " packets! Frame corrupted. Expected seq: "
+                      << nextExpectedSeq_ << ", advancing to: " << seq
+                      << " (Total lost: " << lostPacketCount_ << ")" << std::endl;
+
+            ProcessOrderedPacket(it->second.data(), it->second.size());
+            nextExpectedSeq_ = static_cast<uint16_t>(seq + 1);
+            reorderBuffer_.erase(it);
+        } else {
+            break;
+        }
+    }
+}
+
 void WebRTCClient::DispatchAssembledFrame() {
     if (!assembledFrameBuffer_.empty() && !isFrameCorrupted_) {
         if (!receivedSpsPps_) {
@@ -133,25 +181,8 @@ void WebRTCClient::DispatchAssembledFrame() {
     isFrameCorrupted_ = false;
 }
 
-void WebRTCClient::ProcessRtpPacket(const uint8_t* data, size_t size) {
+void WebRTCClient::ProcessOrderedPacket(const uint8_t* data, size_t size) {
     if (!data || size < 12) return;
-
-    uint16_t seq = (static_cast<uint16_t>(data[2]) << 8) | static_cast<uint16_t>(data[3]);
-    if (hasLastSequenceNumber_) {
-        uint16_t diff = seq - lastSequenceNumber_;
-        if (diff > 1 && diff < 30000) {
-            uint16_t lost = diff - 1;
-            lostPacketCount_ += lost;
-            isFrameCorrupted_ = true;
-            fuBuffer_.clear();
-            std::cerr << "[WebRTC RTP DROP] Lost " << lost << " packets! Frame corrupted. Expected seq: "
-                      << static_cast<uint16_t>(lastSequenceNumber_ + 1)
-                      << ", got: " << seq
-                      << " (Total lost: " << lostPacketCount_ << ")" << std::endl;
-        }
-    }
-    lastSequenceNumber_ = seq;
-    hasLastSequenceNumber_ = true;
 
     bool marker = (data[1] & 0x80) != 0;
     uint32_t rtpTimestamp = (static_cast<uint32_t>(data[4]) << 24) |
@@ -221,14 +252,16 @@ void WebRTCClient::Shutdown() noexcept {
     hasRemoteDescription_ = false;
     pendingCandidates_.clear();
 
+    reorderBuffer_.clear();
+    hasExpectedSeq_ = false;
+    nextExpectedSeq_ = 0;
+
     assembledFrameBuffer_.clear();
     fuBuffer_.clear();
     hasFrameData_ = false;
     receivedSpsPps_ = false;
     isFrameCorrupted_ = false;
     currentFrameTimestamp_ = 0;
-    hasLastSequenceNumber_ = false;
-    lastSequenceNumber_ = 0;
     lostPacketCount_ = 0;
 
     if (videoTrack_) { videoTrack_->close(); videoTrack_.reset(); }
