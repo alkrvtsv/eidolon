@@ -42,6 +42,7 @@ public:
 
 private:
     void ProcessRtpPacket(const uint8_t* data, size_t size);
+    void DispatchAssembledFrame();
 
     std::shared_ptr<rtc::PeerConnection> pc_;
     std::shared_ptr<rtc::Track> videoTrack_;
@@ -62,6 +63,7 @@ private:
     std::vector<uint8_t> fuBuffer_;
     uint32_t currentFrameTimestamp_{0};
     bool hasFrameData_{false};
+    bool receivedSpsPps_{false};
 
     std::function<void(const std::string&)> signalingSend_;
     std::function<void(const uint8_t* data, size_t size, uint64_t timestampUs)> videoCallback_;

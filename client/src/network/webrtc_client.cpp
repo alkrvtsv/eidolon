@@ -102,6 +102,35 @@ bool WebRTCClient::Initialize() {
     return true;
 }
 
+void WebRTCClient::DispatchAssembledFrame() {
+    if (!assembledFrameBuffer_.empty()) {
+        if (!receivedSpsPps_) {
+            const uint8_t* buf = assembledFrameBuffer_.data();
+            size_t bufSize = assembledFrameBuffer_.size();
+            for (size_t i = 0; i + 4 < bufSize; ++i) {
+                if (buf[i] == 0 && buf[i + 1] == 0 && ((buf[i + 2] == 1) || (buf[i + 2] == 0 && buf[i + 3] == 1))) {
+                    size_t typeIdx = (buf[i + 2] == 1) ? (i + 3) : (i + 4);
+                    if (typeIdx < bufSize) {
+                        uint8_t nType = buf[typeIdx] & 0x1F;
+                        if (nType == 7) {
+                            receivedSpsPps_ = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (receivedSpsPps_ && videoCallback_) {
+            uint64_t captureTsUs = (static_cast<uint64_t>(currentFrameTimestamp_) * 100) / 9;
+            videoCallback_(assembledFrameBuffer_.data(), assembledFrameBuffer_.size(), captureTsUs);
+        }
+    }
+    assembledFrameBuffer_.clear();
+    fuBuffer_.clear();
+    hasFrameData_ = false;
+}
+
 void WebRTCClient::ProcessRtpPacket(const uint8_t* data, size_t size) {
     if (!data || size < 12) return;
 
@@ -116,13 +145,7 @@ void WebRTCClient::ProcessRtpPacket(const uint8_t* data, size_t size) {
     if (payloadSize == 0) return;
 
     if (hasFrameData_ && rtpTimestamp != currentFrameTimestamp_) {
-        if (!assembledFrameBuffer_.empty() && videoCallback_) {
-            uint64_t captureTsUs = (static_cast<uint64_t>(currentFrameTimestamp_) * 100) / 9;
-            videoCallback_(assembledFrameBuffer_.data(), assembledFrameBuffer_.size(), captureTsUs);
-        }
-        assembledFrameBuffer_.clear();
-        fuBuffer_.clear();
-        hasFrameData_ = false;
+        DispatchAssembledFrame();
     }
 
     currentFrameTimestamp_ = rtpTimestamp;
@@ -162,14 +185,8 @@ void WebRTCClient::ProcessRtpPacket(const uint8_t* data, size_t size) {
         assembledFrameBuffer_.insert(assembledFrameBuffer_.end(), payload, payload + payloadSize);
     }
 
-    if (marker && !assembledFrameBuffer_.empty()) {
-        if (videoCallback_) {
-            uint64_t captureTsUs = (static_cast<uint64_t>(currentFrameTimestamp_) * 100) / 9;
-            videoCallback_(assembledFrameBuffer_.data(), assembledFrameBuffer_.size(), captureTsUs);
-        }
-        assembledFrameBuffer_.clear();
-        fuBuffer_.clear();
-        hasFrameData_ = false;
+    if (marker) {
+        DispatchAssembledFrame();
     }
 }
 
@@ -181,6 +198,7 @@ void WebRTCClient::Shutdown() noexcept {
     assembledFrameBuffer_.clear();
     fuBuffer_.clear();
     hasFrameData_ = false;
+    receivedSpsPps_ = false;
     currentFrameTimestamp_ = 0;
 
     if (videoTrack_) { videoTrack_->close(); videoTrack_.reset(); }

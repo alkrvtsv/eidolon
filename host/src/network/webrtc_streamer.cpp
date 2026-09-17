@@ -200,41 +200,55 @@ bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size, uint64_t c
     try {
         uint32_t rtpTimestamp = static_cast<uint32_t>((captureTimestampUs * 9) / 100);
 
-        std::vector<std::pair<size_t, size_t>> nals;
+        struct NalInfo {
+            size_t payloadOffset{0};
+            size_t payloadSize{0};
+        };
+
+        std::vector<NalInfo> nals;
         size_t i = 0;
+        size_t prevStartCodeIndex = 0;
+        size_t prevNalPayloadStart = 0;
+        bool inNal = false;
+
         while (i < size) {
+            size_t startCodeLen = 0;
             if (i + 2 < size && data[i] == 0 && data[i + 1] == 0) {
-                size_t startCodeLen = 0;
                 if (data[i + 2] == 1) {
                     startCodeLen = 3;
                 } else if (i + 3 < size && data[i + 2] == 0 && data[i + 3] == 1) {
                     startCodeLen = 4;
                 }
+            }
 
-                if (startCodeLen > 0) {
-                    size_t nalStart = i + startCodeLen;
-                    if (!nals.empty()) {
-                        nals.back().second = i - nals.back().first;
+            if (startCodeLen > 0) {
+                if (inNal) {
+                    size_t nalPayloadEnd = i;
+                    if (nalPayloadEnd > prevNalPayloadStart) {
+                        nals.push_back({prevNalPayloadStart, nalPayloadEnd - prevNalPayloadStart});
                     }
-                    nals.emplace_back(nalStart, 0);
-                    i = nalStart;
-                    continue;
                 }
+                prevStartCodeIndex = i;
+                prevNalPayloadStart = i + startCodeLen;
+                inNal = true;
+                i += startCodeLen;
+                continue;
             }
             i++;
         }
 
-        if (!nals.empty()) {
-            nals.back().second = size - nals.back().first;
+        if (inNal && size > prevNalPayloadStart) {
+            nals.push_back({prevNalPayloadStart, size - prevNalPayloadStart});
         }
 
         constexpr size_t kMaxRtpPayload = 1180;
 
         for (size_t nalIdx = 0; nalIdx < nals.size(); ++nalIdx) {
-            const auto& [nalOffset, nalSize] = nals[nalIdx];
-            if (nalSize == 0) continue;
+            const auto& nal = nals[nalIdx];
+            if (nal.payloadSize == 0) continue;
 
-            const uint8_t* nalData = data + nalOffset;
+            const uint8_t* nalData = data + nal.payloadOffset;
+            size_t nalSize = nal.payloadSize;
             bool isLastNal = (nalIdx == nals.size() - 1);
 
             if (nalSize <= kMaxRtpPayload) {
