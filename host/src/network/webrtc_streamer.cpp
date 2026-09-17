@@ -8,6 +8,7 @@ using json = nlohmann::json;
 
 WebRTCStreamer::WebRTCStreamer() {
     cursorPayloadBuffer_.reserve(64 * 64 * 4 + sizeof(CursorShapeMessage));
+    rtpPacketBuffer_.resize(1500);
 }
 
 WebRTCStreamer::~WebRTCStreamer() noexcept {
@@ -56,15 +57,15 @@ void WebRTCStreamer::CreatePeerConnection() {
         }
     });
 
+    rtc::Description::Video media("video", rtc::Description::Direction::SendOnly);
+    media.addH264Codec(96);
+    media.addSSRC(rtpSsrc_, "video-stream");
+    videoTrack_ = pc_->addTrack(media);
+
     SetupDataChannels();
 }
 
 void WebRTCStreamer::SetupDataChannels() {
-    rtc::DataChannelInit videoInit;
-    videoInit.reliability.unordered = true;
-    videoInit.reliability.maxRetransmits = 0;
-    videoChannel_ = pc_->createDataChannel("video", videoInit);
-
     rtc::DataChannelInit inputInit;
     inputInit.reliability.unordered = true;
     inputInit.reliability.maxRetransmits = 0;
@@ -120,7 +121,7 @@ void WebRTCStreamer::Shutdown() noexcept {
     hasRemoteDescription_ = false;
     pendingCandidates_.clear();
 
-    if (videoChannel_) { videoChannel_->close(); videoChannel_.reset(); }
+    if (videoTrack_) { videoTrack_->close(); videoTrack_.reset(); }
     if (inputChannel_) { inputChannel_->close(); inputChannel_.reset(); }
     if (audioChannel_) { audioChannel_->close(); audioChannel_.reset(); }
     if (cursorChannel_) { cursorChannel_->close(); cursorChannel_.reset(); }
@@ -160,38 +161,115 @@ void WebRTCStreamer::ProcessSignalingMessage(const std::string& msg) {
     }
 }
 
+void WebRTCStreamer::SendRtpPacket(const uint8_t* payload, size_t payloadSize, bool marker, uint32_t rtpTimestamp) {
+    if (!videoTrack_ || !videoTrack_->isOpen()) return;
+
+    size_t packetSize = 12 + payloadSize;
+    if (rtpPacketBuffer_.size() < packetSize) {
+        rtpPacketBuffer_.resize(packetSize);
+    }
+
+    uint8_t* rtp = rtpPacketBuffer_.data();
+    rtp[0] = 0x80;
+    rtp[1] = static_cast<uint8_t>((marker ? 0x80 : 0x00) | (96 & 0x7F));
+    rtp[2] = static_cast<uint8_t>((rtpSequenceNumber_ >> 8) & 0xFF);
+    rtp[3] = static_cast<uint8_t>(rtpSequenceNumber_ & 0xFF);
+    rtpSequenceNumber_++;
+
+    rtp[4] = static_cast<uint8_t>((rtpTimestamp >> 24) & 0xFF);
+    rtp[5] = static_cast<uint8_t>((rtpTimestamp >> 16) & 0xFF);
+    rtp[6] = static_cast<uint8_t>((rtpTimestamp >> 8) & 0xFF);
+    rtp[7] = static_cast<uint8_t>(rtpTimestamp & 0xFF);
+
+    rtp[8] = static_cast<uint8_t>((rtpSsrc_ >> 24) & 0xFF);
+    rtp[9] = static_cast<uint8_t>((rtpSsrc_ >> 16) & 0xFF);
+    rtp[10] = static_cast<uint8_t>((rtpSsrc_ >> 8) & 0xFF);
+    rtp[11] = static_cast<uint8_t>(rtpSsrc_ & 0xFF);
+
+    std::memcpy(rtp + 12, payload, payloadSize);
+
+    rtc::binary bin(reinterpret_cast<const std::byte*>(rtp), reinterpret_cast<const std::byte*>(rtp + packetSize));
+    videoTrack_->send(std::move(bin));
+}
+
 bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size, uint64_t captureTimestampUs) {
-    if (!peerConnected_ || !videoChannel_ || !videoChannel_->isOpen() || !data || size == 0) {
+    if (!peerConnected_ || !videoTrack_ || !videoTrack_->isOpen() || !data || size == 0) {
         return false;
     }
 
     try {
-        if (videoChannel_->bufferedAmount() > 1024 * 1024) {
-            return false;
+        uint32_t rtpTimestamp = static_cast<uint32_t>((captureTimestampUs * 9) / 100);
+
+        std::vector<std::pair<size_t, size_t>> nals;
+        size_t i = 0;
+        while (i < size) {
+            if (i + 2 < size && data[i] == 0 && data[i + 1] == 0) {
+                size_t startCodeLen = 0;
+                if (data[i + 2] == 1) {
+                    startCodeLen = 3;
+                } else if (i + 3 < size && data[i + 2] == 0 && data[i + 3] == 1) {
+                    startCodeLen = 4;
+                }
+
+                if (startCodeLen > 0) {
+                    size_t nalStart = i + startCodeLen;
+                    if (!nals.empty()) {
+                        nals.back().second = i - nals.back().first;
+                    }
+                    nals.emplace_back(nalStart, 0);
+                    i = nalStart;
+                    continue;
+                }
+            }
+            i++;
         }
 
-        const size_t kMaxPayload = 64 * 1024;
-        const uint16_t totalChunks = static_cast<uint16_t>((size + kMaxPayload - 1) / kMaxPayload);
-        const uint32_t frameId = ++videoFrameId_;
-
-        size_t offset = 0;
-        for (uint16_t chunkIndex = 0; chunkIndex < totalChunks; ++chunkIndex) {
-            size_t chunkSize = (std::min)(kMaxPayload, size - offset);
-
-            VideoChunkHeader header;
-            header.frameId = frameId;
-            header.frameSize = static_cast<uint32_t>(size);
-            header.chunkIndex = chunkIndex;
-            header.totalChunks = totalChunks;
-            header.captureTimestampUs = captureTimestampUs;
-
-            rtc::binary packet(sizeof(VideoChunkHeader) + chunkSize);
-            std::memcpy(packet.data(), &header, sizeof(VideoChunkHeader));
-            std::memcpy(packet.data() + sizeof(VideoChunkHeader), data + offset, chunkSize);
-
-            videoChannel_->send(std::move(packet));
-            offset += chunkSize;
+        if (!nals.empty()) {
+            nals.back().second = size - nals.back().first;
         }
+
+        constexpr size_t kMaxRtpPayload = 1180;
+
+        for (size_t nalIdx = 0; nalIdx < nals.size(); ++nalIdx) {
+            const auto& [nalOffset, nalSize] = nals[nalIdx];
+            if (nalSize == 0) continue;
+
+            const uint8_t* nalData = data + nalOffset;
+            bool isLastNal = (nalIdx == nals.size() - 1);
+
+            if (nalSize <= kMaxRtpPayload) {
+                SendRtpPacket(nalData, nalSize, isLastNal, rtpTimestamp);
+            } else {
+                uint8_t nalHeader = nalData[0];
+                uint8_t fnri = nalHeader & 0xE0;
+                uint8_t nalType = nalHeader & 0x1F;
+
+                const uint8_t* payloadData = nalData + 1;
+                size_t payloadRemaining = nalSize - 1;
+                bool isStart = true;
+
+                while (payloadRemaining > 0) {
+                    size_t chunkPayloadSize = (std::min)(kMaxRtpPayload - 2, payloadRemaining);
+                    bool isEnd = (chunkPayloadSize == payloadRemaining);
+
+                    uint8_t fuIndicator = fnri | 28;
+                    uint8_t fuHeader = (isStart ? 0x80 : 0x00) | (isEnd ? 0x40 : 0x00) | nalType;
+
+                    std::vector<uint8_t> fuPacket(2 + chunkPayloadSize);
+                    fuPacket[0] = fuIndicator;
+                    fuPacket[1] = fuHeader;
+                    std::memcpy(fuPacket.data() + 2, payloadData, chunkPayloadSize);
+
+                    bool marker = isLastNal && isEnd;
+                    SendRtpPacket(fuPacket.data(), fuPacket.size(), marker, rtpTimestamp);
+
+                    payloadData += chunkPayloadSize;
+                    payloadRemaining -= chunkPayloadSize;
+                    isStart = false;
+                }
+            }
+        }
+
         return true;
     } catch (const std::exception& e) {
         std::cerr << "[WebRTC Host WARNING] SendVideoFrame: " << e.what() << std::endl;

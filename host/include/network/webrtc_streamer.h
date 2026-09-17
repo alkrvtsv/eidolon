@@ -43,21 +43,24 @@ public:
 private:
     void CreatePeerConnection();
     void SetupDataChannels();
+    void SendRtpPacket(const uint8_t* payload, size_t payloadSize, bool marker, uint32_t rtpTimestamp);
 
     std::shared_ptr<rtc::PeerConnection> pc_;
+    std::shared_ptr<rtc::Track> videoTrack_;
     
-    std::shared_ptr<rtc::DataChannel> videoChannel_;
     std::shared_ptr<rtc::DataChannel> inputChannel_;
     std::shared_ptr<rtc::DataChannel> audioChannel_;
     std::shared_ptr<rtc::DataChannel> cursorChannel_;
     std::shared_ptr<rtc::DataChannel> controlChannel_;
 
     std::vector<uint8_t> cursorPayloadBuffer_;
+    std::vector<uint8_t> rtpPacketBuffer_;
     std::atomic<bool> peerConnected_{false};
     bool hasRemoteDescription_{false};
     std::vector<std::pair<std::string, std::string>> pendingCandidates_;
 
-    uint32_t videoFrameId_{0};
+    uint16_t rtpSequenceNumber_{0};
+    uint32_t rtpSsrc_{0x12345678};
 
     std::function<void(const std::string&)> signalingSend_;
     std::function<void(const uint8_t* data, size_t size)> inputCallback_;

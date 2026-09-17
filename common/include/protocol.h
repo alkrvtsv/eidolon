@@ -80,12 +80,4 @@ struct ClientConfigMessage {
     uint32_t maxBitrateKbps{35000};
 };
 
-struct VideoChunkHeader {
-    uint32_t frameId{0};
-    uint32_t frameSize{0};
-    uint16_t chunkIndex{0};
-    uint16_t totalChunks{0};
-    uint64_t captureTimestampUs{0};
-};
-
 #pragma pack(pop)

@@ -41,12 +41,11 @@ public:
     bool IsConnected() const { return connected_; }
 
 private:
-    void ProcessVideoChunk(const uint8_t* data, size_t size);
-    static bool IsKeyframe(const uint8_t* data, size_t size);
+    void ProcessRtpPacket(const uint8_t* data, size_t size);
 
     std::shared_ptr<rtc::PeerConnection> pc_;
+    std::shared_ptr<rtc::Track> videoTrack_;
 
-    std::shared_ptr<rtc::DataChannel> videoChannel_;
     std::shared_ptr<rtc::DataChannel> inputChannel_;
     std::shared_ptr<rtc::DataChannel> audioChannel_;
     std::shared_ptr<rtc::DataChannel> cursorChannel_;
@@ -59,15 +58,10 @@ private:
     ClientConfigMessage pendingConfig_{};
     bool hasPendingConfig_{false};
 
-    uint32_t activeFrameId_{0};
-    uint32_t expectedFrameSize_{0};
-    uint64_t activeCaptureTimestampUs_{0};
-    uint16_t totalChunks_{0};
-    uint16_t receivedChunksCount_{0};
-    bool frameCompleted_{false};
-    bool waitingForIDR_{true};
-    std::vector<uint8_t> frameBuffer_;
-    std::vector<bool> receivedChunksMask_;
+    std::vector<uint8_t> assembledFrameBuffer_;
+    std::vector<uint8_t> fuBuffer_;
+    uint32_t currentFrameTimestamp_{0};
+    bool hasFrameData_{false};
 
     std::function<void(const std::string&)> signalingSend_;
     std::function<void(const uint8_t* data, size_t size, uint64_t timestampUs)> videoCallback_;
