@@ -222,11 +222,19 @@ int main(int argc, char* argv[]) {
                 renderer.ToggleHUD();
             }
 
-            if (videoQueue.Empty()) {
-                WaitForSingleObject(videoEvent, 1);
-                if (videoQueue.Empty()) {
-                    continue;
+            while (videoQueue.Empty() && renderRunning.load(std::memory_order_relaxed)) {
+                WaitForSingleObject(videoEvent, INFINITE);
+                if (pendingResize.load(std::memory_order_relaxed) || toggleHudRequested.load(std::memory_order_relaxed)) {
+                    break;
                 }
+            }
+
+            if (!renderRunning.load(std::memory_order_relaxed)) {
+                break;
+            }
+
+            if (videoQueue.Empty()) {
+                continue;
             }
 
             auto w0 = std::chrono::high_resolution_clock::now();

@@ -176,7 +176,7 @@ bool FFmpegD3D11VADecoder::Decode(const uint8_t* data, size_t size, bool render)
                 return false;
             }
 
-            if (frame_->format == AV_PIX_FMT_D3D11 && frameCallback_ && render) {
+            if (render && frame_->format == AV_PIX_FMT_D3D11 && frameCallback_) {
                 auto* texture = reinterpret_cast<ID3D11Texture2D*>(frame_->data[0]);
                 auto subresourceIndex = static_cast<uint32_t>(reinterpret_cast<intptr_t>(frame_->data[1]));
 
