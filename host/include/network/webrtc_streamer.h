@@ -8,6 +8,7 @@
 #include <vector>
 #include <string>
 #include <utility>
+#include <chrono>
 
 class WebRTCStreamer {
 public:
@@ -37,6 +38,9 @@ public:
     void SetClientConfigCallback(std::function<void(const ClientConfigMessage&)> callback) {
         clientConfigCallback_ = std::move(callback);
     }
+    void SetBitrateChangeCallback(std::function<void(uint32_t)> callback) {
+        bitrateChangeCallback_ = std::move(callback);
+    }
 
     bool IsPeerConnected() const { return peerConnected_; }
 
@@ -44,6 +48,7 @@ private:
     void CreatePeerConnection();
     void SetupDataChannels();
     void SendRtpPacket(const uint8_t* payload, size_t payloadSize, bool marker, uint32_t rtpTimestamp);
+    void OnNetworkFeedback(const NetworkFeedbackMessage& fb);
 
     std::shared_ptr<rtc::PeerConnection> pc_;
     std::shared_ptr<rtc::Track> videoTrack_;
@@ -62,8 +67,14 @@ private:
     uint16_t rtpSequenceNumber_{0};
     uint32_t rtpSsrc_{0x12345678};
 
+    uint32_t currentBitrateBps_{20'000'000};
+    uint32_t maxBitrateBps_{35'000'000};
+    static constexpr uint32_t kMinBitrateBps = 8'000'000;
+    std::chrono::steady_clock::time_point lastBitrateIncreaseTime_;
+
     std::function<void(const std::string&)> signalingSend_;
     std::function<void(const uint8_t* data, size_t size)> inputCallback_;
     std::function<void(ControlCommandType)> controlCallback_;
     std::function<void(const ClientConfigMessage&)> clientConfigCallback_;
+    std::function<void(uint32_t)> bitrateChangeCallback_;
 };

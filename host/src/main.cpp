@@ -126,6 +126,11 @@ int main() {
             reconfigureEncoderRequested.store(true);
         });
 
+        streamer.SetBitrateChangeCallback([&](uint32_t newBitrate) {
+            sessionBitrate.store(newBitrate);
+            encoder.SetBitrate(newBitrate);
+        });
+
         streamer.SetInputCallback([&](const uint8_t* data, size_t size) {
             if (size < sizeof(MessageType)) return;
             auto type = *reinterpret_cast<const MessageType*>(data);

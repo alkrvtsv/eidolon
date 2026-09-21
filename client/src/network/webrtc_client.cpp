@@ -5,7 +5,9 @@
 
 using json = nlohmann::json;
 
-WebRTCClient::WebRTCClient() = default;
+WebRTCClient::WebRTCClient() {
+    lastFeedbackTime_ = std::chrono::steady_clock::now();
+}
 
 WebRTCClient::~WebRTCClient() noexcept {
     Shutdown();
@@ -102,8 +104,34 @@ bool WebRTCClient::Initialize() {
     return true;
 }
 
+void WebRTCClient::CheckAndSendFeedback() {
+    auto now = std::chrono::steady_clock::now();
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFeedbackTime_).count() >= 200) {
+        if (controlChannel_ && controlChannel_->isOpen()) {
+            NetworkFeedbackMessage msg;
+            msg.type = MessageType::NetworkFeedback;
+            msg.receivedPackets = periodReceivedPackets_;
+            msg.lostPackets = periodLostPackets_;
+            msg.frameJitterMs = 0;
+
+            rtc::binary payload(
+                reinterpret_cast<const std::byte*>(&msg),
+                reinterpret_cast<const std::byte*>(&msg) + sizeof(NetworkFeedbackMessage)
+            );
+            controlChannel_->send(std::move(payload));
+        }
+
+        periodReceivedPackets_ = 0;
+        periodLostPackets_ = 0;
+        lastFeedbackTime_ = now;
+    }
+}
+
 void WebRTCClient::OnRtpPacketReceived(const uint8_t* data, size_t size) {
     if (!data || size < 12) return;
+
+    periodReceivedPackets_++;
+    CheckAndSendFeedback();
 
     uint16_t seq = (static_cast<uint16_t>(data[2]) << 8) | static_cast<uint16_t>(data[3]);
 
@@ -134,6 +162,7 @@ void WebRTCClient::DrainReorderBuffer() {
         } else if (reorderBuffer_.size() >= kMaxReorderWindow) {
             uint16_t lost = static_cast<uint16_t>(seq - nextExpectedSeq_);
             lostPacketCount_ += lost;
+            periodLostPackets_ += lost;
             isFrameCorrupted_ = true;
             fuBuffer_.clear();
 
@@ -263,6 +292,8 @@ void WebRTCClient::Shutdown() noexcept {
     isFrameCorrupted_ = false;
     currentFrameTimestamp_ = 0;
     lostPacketCount_ = 0;
+    periodReceivedPackets_ = 0;
+    periodLostPackets_ = 0;
 
     if (videoTrack_) { videoTrack_->close(); videoTrack_.reset(); }
     if (inputChannel_) { inputChannel_->close(); inputChannel_.reset(); }

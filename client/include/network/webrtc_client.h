@@ -9,6 +9,7 @@
 #include <vector>
 #include <map>
 #include <utility>
+#include <chrono>
 
 class WebRTCClient {
 public:
@@ -46,6 +47,7 @@ private:
     void DrainReorderBuffer();
     void ProcessOrderedPacket(const uint8_t* data, size_t size);
     void DispatchAssembledFrame();
+    void CheckAndSendFeedback();
 
     static bool SequenceLessThan(uint16_t s1, uint16_t s2) noexcept {
         return static_cast<int16_t>(s1 - s2) < 0;
@@ -84,6 +86,10 @@ private:
     bool isFrameCorrupted_{false};
 
     uint64_t lostPacketCount_{0};
+
+    uint32_t periodReceivedPackets_{0};
+    uint32_t periodLostPackets_{0};
+    std::chrono::steady_clock::time_point lastFeedbackTime_;
 
     std::function<void(const std::string&)> signalingSend_;
     std::function<void(const uint8_t* data, size_t size, uint64_t timestampUs)> videoCallback_;

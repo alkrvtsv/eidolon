@@ -10,6 +10,7 @@ using json = nlohmann::json;
 WebRTCStreamer::WebRTCStreamer() {
     cursorPayloadBuffer_.reserve(64 * 64 * 4 + sizeof(CursorShapeMessage));
     rtpPacketBuffer_.resize(1500);
+    lastBitrateIncreaseTime_ = std::chrono::steady_clock::now();
 }
 
 WebRTCStreamer::~WebRTCStreamer() noexcept {
@@ -66,6 +67,42 @@ void WebRTCStreamer::CreatePeerConnection() {
     SetupDataChannels();
 }
 
+void WebRTCStreamer::OnNetworkFeedback(const NetworkFeedbackMessage& fb) {
+    uint32_t totalPackets = fb.receivedPackets + fb.lostPackets;
+    if (totalPackets == 0) return;
+
+    float lossRate = static_cast<float>(fb.lostPackets) / static_cast<float>(totalPackets);
+    auto now = std::chrono::steady_clock::now();
+
+    if (lossRate > 0.05f) {
+        uint32_t newBitrate = static_cast<uint32_t>(currentBitrateBps_ * 0.85f);
+        newBitrate = (std::max)(newBitrate, kMinBitrateBps);
+
+        if (newBitrate != currentBitrateBps_) {
+            currentBitrateBps_ = newBitrate;
+            lastBitrateIncreaseTime_ = now;
+            std::cout << "[BWE] Congestion detected (Loss: " << static_cast<int>(lossRate * 100.0f)
+                      << "%). Reduced Bitrate to: " << (currentBitrateBps_ / 1000) << " kbps" << std::endl;
+            if (bitrateChangeCallback_) {
+                bitrateChangeCallback_(currentBitrateBps_);
+            }
+        }
+    } else if (lossRate == 0.0f && currentBitrateBps_ < maxBitrateBps_) {
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastBitrateIncreaseTime_).count() >= 500) {
+            uint32_t newBitrate = (std::min)(currentBitrateBps_ + 1'000'000, maxBitrateBps_);
+            if (newBitrate != currentBitrateBps_) {
+                currentBitrateBps_ = newBitrate;
+                lastBitrateIncreaseTime_ = now;
+                std::cout << "[BWE] Channel stable. Increased Bitrate to: "
+                          << (currentBitrateBps_ / 1000) << " kbps" << std::endl;
+                if (bitrateChangeCallback_) {
+                    bitrateChangeCallback_(currentBitrateBps_);
+                }
+            }
+        }
+    }
+}
+
 void WebRTCStreamer::SetupDataChannels() {
     rtc::DataChannelInit inputInit;
     inputInit.reliability.unordered = true;
@@ -104,9 +141,16 @@ void WebRTCStreamer::SetupDataChannels() {
                     }
                 } else if (type == MessageType::ClientConfig && bin.size() >= sizeof(ClientConfigMessage)) {
                     const auto* cfg = reinterpret_cast<const ClientConfigMessage*>(bin.data());
+                    if (cfg->maxBitrateKbps > 0) {
+                        maxBitrateBps_ = cfg->maxBitrateKbps * 1000;
+                        currentBitrateBps_ = (std::min)(currentBitrateBps_, maxBitrateBps_);
+                    }
                     if (clientConfigCallback_) {
                         clientConfigCallback_(*cfg);
                     }
+                } else if (type == MessageType::NetworkFeedback && bin.size() >= sizeof(NetworkFeedbackMessage)) {
+                    const auto* fb = reinterpret_cast<const NetworkFeedbackMessage*>(bin.data());
+                    OnNetworkFeedback(*fb);
                 }
             }
         }
