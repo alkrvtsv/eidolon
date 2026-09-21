@@ -115,15 +115,13 @@ int main() {
 
             uint32_t targetFps = (cfg.refreshRate > 0) ? cfg.refreshRate : 60;
             targetFps = std::clamp(targetFps, 30u, 144u);
-            sessionFps.store(targetFps);
 
-            uint32_t targetBps = (cfg.maxBitrateKbps > 0) ? (cfg.maxBitrateKbps * 1000) : 35'000'000;
-            sessionBitrate.store(targetBps);
-
-            int64_t targetIntervalUs = static_cast<int64_t>((1'000'000.0 / targetFps) * 0.85);
-            sessionMinIntervalUs.store(targetIntervalUs);
-
-            reconfigureEncoderRequested.store(true);
+            if (targetFps != sessionFps.load(std::memory_order_relaxed)) {
+                sessionFps.store(targetFps);
+                int64_t targetIntervalUs = static_cast<int64_t>((1'000'000.0 / targetFps) * 0.85);
+                sessionMinIntervalUs.store(targetIntervalUs);
+                reconfigureEncoderRequested.store(true);
+            }
         });
 
         streamer.SetBitrateChangeCallback([&](uint32_t newBitrate) {

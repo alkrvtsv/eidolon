@@ -147,7 +147,7 @@ int main(int argc, char* argv[]) {
     clientConfig.width = screenWidth;
     clientConfig.height = screenHeight;
     clientConfig.refreshRate = screenRefreshRate;
-    clientConfig.maxBitrateKbps = 20000;
+    clientConfig.maxBitrateKbps = 50000;
     client.SendClientConfig(clientConfig);
 
     PerformanceMetrics metrics;
