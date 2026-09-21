@@ -6,6 +6,7 @@
 #include <wrl/client.h>
 #include <memory>
 #include <array>
+#include <atomic>
 
 using Microsoft::WRL::ComPtr;
 
@@ -21,6 +22,8 @@ public:
     ID3D11Texture2D* GetNextInputTexture() override;
     bool EncodeCurrentSlot(bool forceIDR) override;
     bool EncodeLastValidSlot(bool forceIDR) override;
+
+    void SetBitrate(uint32_t bitrateBps) override;
 
     void SetEncodedFrameCallback(std::function<void(const uint8_t*, size_t)> callback) override {
         encodedCallback_ = std::move(callback);
@@ -49,11 +52,14 @@ private:
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;
     EncoderConfig config_{};
+    NV_ENC_INITIALIZE_PARAMS initParams_{};
+    NV_ENC_CONFIG encodeConfig_{};
     uint64_t frameIndex_{0};
 
     std::array<ResourceSlot, kSlotCount> slots_{};
     int currentSlot_{0};
     int lastValidSlot_{-1};
 
+    std::atomic<uint32_t> currentBitrate_{0};
     std::function<void(const uint8_t*, size_t)> encodedCallback_;
 };

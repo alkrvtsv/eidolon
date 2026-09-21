@@ -31,6 +31,8 @@ public:
     virtual bool EncodeLastValidSlot(bool forceIDR) = 0;
     virtual void SetEncodedFrameCallback(std::function<void(const uint8_t* data, size_t size)> callback) = 0;
 
+    virtual void SetBitrate(uint32_t bitrateBps) = 0;
+
     virtual uint32_t GetWidth() const = 0;
     virtual uint32_t GetHeight() const = 0;
 };

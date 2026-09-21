@@ -1,4 +1,6 @@
 #include "encoder/nvenc_encoder.h"
+#include <iostream>
+#include <cstring>
 
 NVENCEncoder::NVENCEncoder() = default;
 
@@ -63,63 +65,65 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
         return false;
     }
 
-    NV_ENC_CONFIG encodeConfig = presetConfig.presetCfg;
-    encodeConfig.profileGUID = NV_ENC_H264_PROFILE_HIGH_GUID;
-    encodeConfig.gopLength = NVENC_INFINITE_GOPLENGTH;
-    encodeConfig.frameIntervalP = 1;
+    encodeConfig_ = presetConfig.presetCfg;
+    encodeConfig_.profileGUID = NV_ENC_H264_PROFILE_HIGH_GUID;
+    encodeConfig_.gopLength = NVENC_INFINITE_GOPLENGTH;
+    encodeConfig_.frameIntervalP = 1;
 
     uint32_t singleFrameBits = config_.bitRate / (config_.frameRateNum ? config_.frameRateNum : 60);
 
-    encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
-    encodeConfig.rcParams.averageBitRate = config_.bitRate;
-    encodeConfig.rcParams.maxBitRate = config_.bitRate;
-    encodeConfig.rcParams.vbvBufferSize = singleFrameBits;
-    encodeConfig.rcParams.vbvInitialDelay = singleFrameBits;
-    encodeConfig.rcParams.zeroReorderDelay = 1;
+    encodeConfig_.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
+    encodeConfig_.rcParams.averageBitRate = config_.bitRate;
+    encodeConfig_.rcParams.maxBitRate = config_.bitRate;
+    encodeConfig_.rcParams.vbvBufferSize = singleFrameBits;
+    encodeConfig_.rcParams.vbvInitialDelay = singleFrameBits;
+    encodeConfig_.rcParams.zeroReorderDelay = 1;
 
-    encodeConfig.rcParams.enableAQ = 1;
-    encodeConfig.rcParams.aqStrength = 5;
+    encodeConfig_.rcParams.enableAQ = 1;
+    encodeConfig_.rcParams.aqStrength = 5;
 
-    encodeConfig.rcParams.enableMinQP = 1;
-    encodeConfig.rcParams.enableMaxQP = 1;
-    encodeConfig.rcParams.minQP = { 10, 10, 10 };
-    encodeConfig.rcParams.maxQP = { 38, 38, 38 };
+    encodeConfig_.rcParams.enableMinQP = 1;
+    encodeConfig_.rcParams.enableMaxQP = 1;
+    encodeConfig_.rcParams.minQP = { 10, 10, 10 };
+    encodeConfig_.rcParams.maxQP = { 38, 38, 38 };
 
-    encodeConfig.encodeCodecConfig.h264Config.enableIntraRefresh = config_.enableIntraRefresh ? 1 : 0;
+    encodeConfig_.encodeCodecConfig.h264Config.enableIntraRefresh = config_.enableIntraRefresh ? 1 : 0;
     if (config_.enableIntraRefresh) {
-        encodeConfig.encodeCodecConfig.h264Config.intraRefreshPeriod = config_.intraRefreshPeriod;
-        encodeConfig.encodeCodecConfig.h264Config.intraRefreshCnt = config_.intraRefreshDuration;
+        encodeConfig_.encodeCodecConfig.h264Config.intraRefreshPeriod = config_.intraRefreshPeriod;
+        encodeConfig_.encodeCodecConfig.h264Config.intraRefreshCnt = config_.intraRefreshDuration;
     }
-    encodeConfig.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
-    encodeConfig.encodeCodecConfig.h264Config.idrPeriod = NVENC_INFINITE_GOPLENGTH;
-    encodeConfig.encodeCodecConfig.h264Config.sliceMode = 0;
-    encodeConfig.encodeCodecConfig.h264Config.sliceModeData = 0;
+    encodeConfig_.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
+    encodeConfig_.encodeCodecConfig.h264Config.idrPeriod = NVENC_INFINITE_GOPLENGTH;
+    encodeConfig_.encodeCodecConfig.h264Config.sliceMode = 0;
+    encodeConfig_.encodeCodecConfig.h264Config.sliceModeData = 0;
 
-    encodeConfig.encodeCodecConfig.h264Config.h264VUIParameters.videoFormat = NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
-    encodeConfig.encodeCodecConfig.h264Config.h264VUIParameters.colourDescriptionPresentFlag = 1;
-    encodeConfig.encodeCodecConfig.h264Config.h264VUIParameters.colourPrimaries = NV_ENC_VUI_COLOR_PRIMARIES_BT709;
-    encodeConfig.encodeCodecConfig.h264Config.h264VUIParameters.transferCharacteristics = NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
-    encodeConfig.encodeCodecConfig.h264Config.h264VUIParameters.colourMatrix = NV_ENC_VUI_MATRIX_COEFFS_BT709;
-    encodeConfig.encodeCodecConfig.h264Config.h264VUIParameters.videoFullRangeFlag = 1;
+    encodeConfig_.encodeCodecConfig.h264Config.h264VUIParameters.videoFormat = NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
+    encodeConfig_.encodeCodecConfig.h264Config.h264VUIParameters.colourDescriptionPresentFlag = 1;
+    encodeConfig_.encodeCodecConfig.h264Config.h264VUIParameters.colourPrimaries = NV_ENC_VUI_COLOR_PRIMARIES_BT709;
+    encodeConfig_.encodeCodecConfig.h264Config.h264VUIParameters.transferCharacteristics = NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
+    encodeConfig_.encodeCodecConfig.h264Config.h264VUIParameters.colourMatrix = NV_ENC_VUI_MATRIX_COEFFS_BT709;
+    encodeConfig_.encodeCodecConfig.h264Config.h264VUIParameters.videoFullRangeFlag = 1;
 
-    NV_ENC_INITIALIZE_PARAMS initParams = {};
-    initParams.version = NV_ENC_INITIALIZE_PARAMS_VER;
-    initParams.encodeGUID = codecGuid;
-    initParams.presetGUID = presetGuid;
-    initParams.encodeWidth = config_.width;
-    initParams.encodeHeight = config_.height;
-    initParams.darWidth = config_.width;
-    initParams.darHeight = config_.height;
-    initParams.frameRateNum = config_.frameRateNum;
-    initParams.frameRateDen = config_.frameRateDen;
-    initParams.enablePTD = 1;
-    initParams.encodeConfig = &encodeConfig;
-    initParams.tuningInfo = NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY;
+    initParams_ = {};
+    initParams_.version = NV_ENC_INITIALIZE_PARAMS_VER;
+    initParams_.encodeGUID = codecGuid;
+    initParams_.presetGUID = presetGuid;
+    initParams_.encodeWidth = config_.width;
+    initParams_.encodeHeight = config_.height;
+    initParams_.darWidth = config_.width;
+    initParams_.darHeight = config_.height;
+    initParams_.frameRateNum = config_.frameRateNum;
+    initParams_.frameRateDen = config_.frameRateDen;
+    initParams_.enablePTD = 1;
+    initParams_.encodeConfig = &encodeConfig_;
+    initParams_.tuningInfo = NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY;
 
-    if (nvApi_->nvEncInitializeEncoder(encoder_, &initParams) != NV_ENC_SUCCESS) {
+    if (nvApi_->nvEncInitializeEncoder(encoder_, &initParams_) != NV_ENC_SUCCESS) {
         Shutdown();
         return false;
     }
+
+    currentBitrate_.store(config_.bitRate, std::memory_order_relaxed);
 
     D3D11_TEXTURE2D_DESC texDesc = {};
     texDesc.Width = config_.width;
@@ -208,10 +212,45 @@ void NVENCEncoder::Shutdown() noexcept {
     device_.Reset();
     lastValidSlot_ = -1;
     currentSlot_ = 0;
+    currentBitrate_.store(0, std::memory_order_relaxed);
 }
 
 ID3D11Texture2D* NVENCEncoder::GetNextInputTexture() {
     return slots_[currentSlot_].inputTexture.Get();
+}
+
+void NVENCEncoder::SetBitrate(uint32_t bitrateBps) {
+    if (!encoder_ || !nvApi_) {
+        return;
+    }
+
+    if (bitrateBps == currentBitrate_.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    NV_ENC_RECONFIGURE_PARAMS reconfigParams = {};
+    reconfigParams.version = NV_ENC_RECONFIGURE_PARAMS_VER;
+    reconfigParams.reInitEncodeParams.version = NV_ENC_INITIALIZE_PARAMS_VER;
+
+    std::memcpy(&reconfigParams.reInitEncodeParams, &initParams_, sizeof(NV_ENC_INITIALIZE_PARAMS));
+
+    uint32_t fps = config_.frameRateNum ? (config_.frameRateNum / (config_.frameRateDen ? config_.frameRateDen : 1)) : 60;
+    if (fps == 0) fps = 60;
+
+    encodeConfig_.rcParams.averageBitRate = bitrateBps;
+    encodeConfig_.rcParams.maxBitRate = bitrateBps;
+    encodeConfig_.rcParams.vbvBufferSize = (bitrateBps / fps) * 2;
+    encodeConfig_.rcParams.vbvInitialDelay = encodeConfig_.rcParams.vbvBufferSize;
+
+    reconfigParams.reInitEncodeParams.encodeConfig = &encodeConfig_;
+
+    NVENCSTATUS status = nvApi_->nvEncReconfigureEncoder(encoder_, &reconfigParams);
+    if (status == NV_ENC_SUCCESS) {
+        currentBitrate_.store(bitrateBps, std::memory_order_relaxed);
+        std::cout << "[NVENC] Dynamically reconfigured Bitrate to: " << (bitrateBps / 1000) << " kbps" << std::endl;
+    } else {
+        std::cerr << "[NVENC ERROR] nvEncReconfigureEncoder failed: " << status << std::endl;
+    }
 }
 
 bool NVENCEncoder::EncodeSlot(int slotIndex, bool forceIDR) {

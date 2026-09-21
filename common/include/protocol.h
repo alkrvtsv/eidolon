@@ -13,7 +13,8 @@ enum class MessageType : uint8_t {
     CursorShape = 6,
     ControlCommand = 7,
     InputMouseAbsolute = 8,
-    ClientConfig = 9
+    ClientConfig = 9,
+    NetworkFeedback = 10
 };
 
 struct MouseRelativeMessage {
@@ -78,6 +79,13 @@ struct ClientConfigMessage {
     uint32_t height{1080};
     uint32_t refreshRate{60};
     uint32_t maxBitrateKbps{35000};
+};
+
+struct NetworkFeedbackMessage {
+    MessageType type{MessageType::NetworkFeedback};
+    uint32_t receivedPackets{0};
+    uint32_t lostPackets{0};
+    uint32_t frameJitterMs{0};
 };
 
 #pragma pack(pop)
