@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iostream>
+#include <windows.h>
 
 using json = nlohmann::json;
 
@@ -207,7 +208,6 @@ bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size, uint64_t c
 
         std::vector<NalInfo> nals;
         size_t i = 0;
-        size_t prevStartCodeIndex = 0;
         size_t prevNalPayloadStart = 0;
         bool inNal = false;
 
@@ -228,7 +228,6 @@ bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size, uint64_t c
                         nals.push_back({prevNalPayloadStart, nalPayloadEnd - prevNalPayloadStart});
                     }
                 }
-                prevStartCodeIndex = i;
                 prevNalPayloadStart = i + startCodeLen;
                 inNal = true;
                 i += startCodeLen;
@@ -242,6 +241,12 @@ bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size, uint64_t c
         }
 
         constexpr size_t kMaxRtpPayload = 1120;
+        size_t packetBurstCounter = 0;
+
+        LARGE_INTEGER qpcFreq;
+        QueryPerformanceFrequency(&qpcFreq);
+        const int64_t ticksPerMicrosecond = qpcFreq.QuadPart / 1000000;
+        const int64_t paceDelayTicks = 150 * ticksPerMicrosecond;
 
         for (size_t nalIdx = 0; nalIdx < nals.size(); ++nalIdx) {
             const auto& nal = nals[nalIdx];
@@ -252,6 +257,13 @@ bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size, uint64_t c
             bool isLastNal = (nalIdx == nals.size() - 1);
 
             if (nalSize <= kMaxRtpPayload) {
+                if (++packetBurstCounter % 4 == 0) {
+                    LARGE_INTEGER tStart, tNow;
+                    QueryPerformanceCounter(&tStart);
+                    do {
+                        QueryPerformanceCounter(&tNow);
+                    } while ((tNow.QuadPart - tStart.QuadPart) < paceDelayTicks);
+                }
                 SendRtpPacket(nalData, nalSize, isLastNal, rtpTimestamp);
             } else {
                 uint8_t nalHeader = nalData[0];
@@ -275,6 +287,15 @@ bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size, uint64_t c
                     std::memcpy(fuPacket.data() + 2, payloadData, chunkPayloadSize);
 
                     bool marker = isLastNal && isEnd;
+
+                    if (++packetBurstCounter % 4 == 0) {
+                        LARGE_INTEGER tStart, tNow;
+                        QueryPerformanceCounter(&tStart);
+                        do {
+                            QueryPerformanceCounter(&tNow);
+                        } while ((tNow.QuadPart - tStart.QuadPart) < paceDelayTicks);
+                    }
+
                     SendRtpPacket(fuPacket.data(), fuPacket.size(), marker, rtpTimestamp);
 
                     payloadData += chunkPayloadSize;
