@@ -115,7 +115,7 @@ bool PerformanceHUD::CreateDeviceResources() {
     hr = d2dRenderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.15f, 0.95f, 0.35f, 1.0f), &textBrush_);
     if (FAILED(hr)) return false;
 
-    hr = d2dRenderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.04f, 0.04f, 0.06f, 0.82f), &backgroundBrush_);
+    hr = d2dRenderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.04f, 0.04f, 0.06f, 0.85f), &backgroundBrush_);
     if (FAILED(hr)) return false;
 
     hr = d2dRenderTarget_->CreateSolidColorBrush(D2D1::ColorF(0.02f, 0.02f, 0.03f, 0.90f), &graphBgBrush_);
@@ -182,6 +182,8 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
         ss << std::fixed << std::setprecision(1);
         ss << L"Eidolon HUD [Ctrl+Shift+H]\n";
         ss << L"FPS: " << metrics.fps << L"\n";
+        ss << L"Bitrate: " << metrics.bitrateMbps << L" Mbps (Frame: " << metrics.frameSizeKb << L" KB)\n";
+        ss << L"Loss: " << metrics.lossRatePct << L"% (Dropped: " << metrics.lostPacketsTotal << L")\n";
         ss << L"Net Pace: " << avgInterval << L" ms (Jitter: " << avgJitter << L" ms, max " << maxJitterMs_ << L")\n";
         ss << L"Decode:   avg " << avgDecode << L" ms | max " << maxDecodeMs_ << L" ms\n";
         ss << L"Render:   avg " << avgRender << L" ms | max " << maxRenderMs_ << L" ms\n";
@@ -207,7 +209,7 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
 
     d2dRenderTarget_->BeginDraw();
 
-    D2D1_RECT_F bgRect = D2D1::RectF(14.0f, 14.0f, 370.0f, 360.0f);
+    D2D1_RECT_F bgRect = D2D1::RectF(14.0f, 14.0f, 376.0f, 400.0f);
     D2D1_ROUNDED_RECT roundedRect = D2D1::RoundedRect(bgRect, 6.0f, 6.0f);
     d2dRenderTarget_->FillRoundedRectangle(roundedRect, backgroundBrush_.Get());
 
@@ -216,8 +218,8 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
         cachedText_.c_str(),
         static_cast<UINT32>(cachedText_.length()),
         textFormat_.Get(),
-        350.0f,
-        220.0f,
+        356.0f,
+        260.0f,
         textLayout.GetAddressOf()
     );
 
@@ -227,8 +229,8 @@ void PerformanceHUD::Render(const PerformanceMetrics& metrics) {
     }
 
     const float graphX = 24.0f;
-    const float graphY = 246.0f;
-    const float graphW = 332.0f;
+    const float graphY = 286.0f;
+    const float graphW = 338.0f;
     const float graphH = 80.0f;
     const float graphBottom = graphY + graphH;
 

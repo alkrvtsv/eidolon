@@ -42,6 +42,16 @@ public:
 
     bool IsConnected() const { return connected_; }
 
+    float GetIncomingBitrateMbps() const noexcept {
+        return incomingBitrateMbps_.load(std::memory_order_relaxed);
+    }
+    float GetRecentLossRatePct() const noexcept {
+        return recentLossRatePct_.load(std::memory_order_relaxed);
+    }
+    uint64_t GetTotalLostPackets() const noexcept {
+        return lostPacketCount_;
+    }
+
 private:
     void OnRtpPacketReceived(const uint8_t* data, size_t size);
     void DrainReorderBuffer();
@@ -90,6 +100,11 @@ private:
     uint32_t periodReceivedPackets_{0};
     uint32_t periodLostPackets_{0};
     std::chrono::steady_clock::time_point lastFeedbackTime_;
+
+    size_t periodByteCount_{0};
+    std::chrono::steady_clock::time_point lastBitrateCalcTime_;
+    std::atomic<float> incomingBitrateMbps_{0.0f};
+    std::atomic<float> recentLossRatePct_{0.0f};
 
     std::function<void(const std::string&)> signalingSend_;
     std::function<void(const uint8_t* data, size_t size, uint64_t timestampUs)> videoCallback_;

@@ -7,6 +7,7 @@ using json = nlohmann::json;
 
 WebRTCClient::WebRTCClient() {
     lastFeedbackTime_ = std::chrono::steady_clock::now();
+    lastBitrateCalcTime_ = std::chrono::steady_clock::now();
 }
 
 WebRTCClient::~WebRTCClient() noexcept {
@@ -106,7 +107,19 @@ bool WebRTCClient::Initialize() {
 
 void WebRTCClient::CheckAndSendFeedback() {
     auto now = std::chrono::steady_clock::now();
-    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFeedbackTime_).count() >= 200) {
+    auto elapsedFeedbackMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFeedbackTime_).count();
+
+    if (elapsedFeedbackMs >= 200) {
+        uint32_t totalPackets = periodReceivedPackets_ + periodLostPackets_;
+        if (totalPackets > 0) {
+            recentLossRatePct_.store(
+                (static_cast<float>(periodLostPackets_) * 100.0f) / static_cast<float>(totalPackets),
+                std::memory_order_relaxed
+            );
+        } else {
+            recentLossRatePct_.store(0.0f, std::memory_order_relaxed);
+        }
+
         if (controlChannel_ && controlChannel_->isOpen()) {
             NetworkFeedbackMessage msg;
             msg.type = MessageType::NetworkFeedback;
@@ -125,12 +138,30 @@ void WebRTCClient::CheckAndSendFeedback() {
         periodLostPackets_ = 0;
         lastFeedbackTime_ = now;
     }
+
+    auto elapsedBitrateMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastBitrateCalcTime_).count();
+    if (elapsedBitrateMs >= 200) {
+        float instantMbps = (static_cast<float>(periodByteCount_ * 8)) / (static_cast<float>(elapsedBitrateMs) * 1000.0f);
+        float currentSmoothed = incomingBitrateMbps_.load(std::memory_order_relaxed);
+
+        if (currentSmoothed <= 0.01f) {
+            incomingBitrateMbps_.store(instantMbps, std::memory_order_relaxed);
+        } else {
+            float smoothed = (currentSmoothed * 0.7f) + (instantMbps * 0.3f);
+            incomingBitrateMbps_.store(smoothed, std::memory_order_relaxed);
+        }
+
+        periodByteCount_ = 0;
+        lastBitrateCalcTime_ = now;
+    }
 }
 
 void WebRTCClient::OnRtpPacketReceived(const uint8_t* data, size_t size) {
     if (!data || size < 12) return;
 
     periodReceivedPackets_++;
+    periodByteCount_ += size;
+
     CheckAndSendFeedback();
 
     uint16_t seq = (static_cast<uint16_t>(data[2]) << 8) | static_cast<uint16_t>(data[3]);
@@ -294,6 +325,9 @@ void WebRTCClient::Shutdown() noexcept {
     lostPacketCount_ = 0;
     periodReceivedPackets_ = 0;
     periodLostPackets_ = 0;
+    periodByteCount_ = 0;
+    incomingBitrateMbps_.store(0.0f, std::memory_order_relaxed);
+    recentLossRatePct_.store(0.0f, std::memory_order_relaxed);
 
     if (videoTrack_) { videoTrack_->close(); videoTrack_.reset(); }
     if (inputChannel_) { inputChannel_->close(); inputChannel_.reset(); }

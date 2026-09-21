@@ -17,6 +17,10 @@ using Microsoft::WRL::ComPtr;
 
 struct PerformanceMetrics {
     float fps{0.0f};
+    float bitrateMbps{0.0f};
+    float lossRatePct{0.0f};
+    uint64_t lostPacketsTotal{0};
+    float frameSizeKb{0.0f};
     float decodeTimeMs{0.0f};
     float renderTimeMs{0.0f};
     float bltTimeMs{0.0f};

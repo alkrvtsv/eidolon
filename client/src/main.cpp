@@ -169,6 +169,10 @@ int main(int argc, char* argv[]) {
         metrics.hostWidth = frame.width;
         metrics.hostHeight = frame.height;
 
+        metrics.bitrateMbps = client.GetIncomingBitrateMbps();
+        metrics.lossRatePct = client.GetRecentLossRatePct();
+        metrics.lostPacketsTotal = client.GetTotalLostPackets();
+
         auto t0 = std::chrono::high_resolution_clock::now();
         renderer.RenderFrame(frame, metrics);
         auto t1 = std::chrono::high_resolution_clock::now();
@@ -179,6 +183,11 @@ int main(int argc, char* argv[]) {
             if (logFile.is_open()) {
                 loggedFrameIndex++;
                 logFile << loggedFrameIndex << ","
+                        << metrics.fps << ","
+                        << metrics.bitrateMbps << ","
+                        << metrics.frameSizeKb << ","
+                        << metrics.lossRatePct << ","
+                        << metrics.lostPacketsTotal << ","
                         << metrics.frameIntervalMs << ","
                         << metrics.frameJitterMs << ","
                         << metrics.waitLatencyMs << ","
@@ -252,6 +261,7 @@ int main(int argc, char* argv[]) {
             EncodedVideoPacket pkt;
             if (videoQueue.Pop(pkt)) {
                 metrics.videoQueueSize = videoQueue.Size();
+                metrics.frameSizeKb = static_cast<float>(pkt.data.size()) / 1024.0f;
                 decodeStartTime = std::chrono::high_resolution_clock::now();
                 decoder.Decode(pkt.data.data(), pkt.data.size(), true);
                 frameCount++;
@@ -341,7 +351,7 @@ int main(int argc, char* argv[]) {
                         std::lock_guard<std::mutex> lock(logMutex);
                         logFile.open("perf_log.csv", std::ios::out | std::ios::trunc);
                         if (logFile.is_open()) {
-                            logFile << "frame_index,interval_ms,jitter_ms,wait_ms,decode_ms,blt_ms,present_ms,render_ms,queue_size\n";
+                            logFile << "frame_index,fps,bitrate_mbps,frame_kb,loss_pct,lost_total,interval_ms,jitter_ms,wait_ms,decode_ms,blt_ms,present_ms,render_ms,queue_size\n";
                             loggedFrameIndex = 0;
                             isLogging.store(true);
                             std::cout << "[Client] Started CSV logging to perf_log.csv" << std::endl;
