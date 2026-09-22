@@ -57,7 +57,7 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     presetConfig.version = NV_ENC_PRESET_CONFIG_VER;
     presetConfig.presetCfg.version = NV_ENC_CONFIG_VER;
 
-    GUID codecGuid = NV_ENC_CODEC_H264_GUID;
+    GUID codecGuid = NV_ENC_CODEC_HEVC_GUID;
     GUID presetGuid = NV_ENC_PRESET_P3_GUID;
 
     if (nvApi_->nvEncGetEncodePresetConfigEx(encoder_, codecGuid, presetGuid, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &presetConfig) != NV_ENC_SUCCESS) {
@@ -66,45 +66,33 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     }
 
     encodeConfig_ = presetConfig.presetCfg;
-    encodeConfig_.profileGUID = NV_ENC_H264_PROFILE_HIGH_GUID;
     encodeConfig_.gopLength = NVENC_INFINITE_GOPLENGTH;
     encodeConfig_.frameIntervalP = 1;
-
-    uint32_t singleFrameBits = config_.bitRate / (config_.frameRateNum ? config_.frameRateNum : 60);
-
     encodeConfig_.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
     encodeConfig_.rcParams.averageBitRate = config_.bitRate;
-    encodeConfig_.rcParams.maxBitRate = config_.bitRate;
-    encodeConfig_.rcParams.vbvBufferSize = singleFrameBits;
-    encodeConfig_.rcParams.vbvInitialDelay = singleFrameBits;
+    encodeConfig_.rcParams.maxBitRate = config_.maxBitRate;
+    encodeConfig_.rcParams.vbvBufferSize = config_.vbvBufferSize;
+    encodeConfig_.rcParams.vbvInitialDelay = config_.vbvBufferSize;
     encodeConfig_.rcParams.zeroReorderDelay = 1;
 
-    encodeConfig_.rcParams.enableAQ = 1;
-    encodeConfig_.rcParams.aqStrength = 5;
-
-    encodeConfig_.rcParams.enableMinQP = 1;
-    encodeConfig_.rcParams.enableMaxQP = 1;
-    encodeConfig_.rcParams.minQP = { 10, 10, 10 };
-    encodeConfig_.rcParams.maxQP = { 38, 38, 38 };
-
-    encodeConfig_.encodeCodecConfig.h264Config.enableIntraRefresh = config_.enableIntraRefresh ? 1 : 0;
     if (config_.enableIntraRefresh) {
-        encodeConfig_.encodeCodecConfig.h264Config.intraRefreshPeriod = config_.intraRefreshPeriod;
-        encodeConfig_.encodeCodecConfig.h264Config.intraRefreshCnt = config_.intraRefreshDuration;
+        encodeConfig_.encodeCodecConfig.hevcConfig.enableIntraRefresh = 1;
+        encodeConfig_.encodeCodecConfig.hevcConfig.intraRefreshPeriod = config_.intraRefreshPeriod;
+        encodeConfig_.encodeCodecConfig.hevcConfig.intraRefreshCnt = config_.intraRefreshDuration;
     }
-    encodeConfig_.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
-    encodeConfig_.encodeCodecConfig.h264Config.idrPeriod = NVENC_INFINITE_GOPLENGTH;
-    encodeConfig_.encodeCodecConfig.h264Config.sliceMode = 0;
-    encodeConfig_.encodeCodecConfig.h264Config.sliceModeData = 0;
 
-    encodeConfig_.encodeCodecConfig.h264Config.h264VUIParameters.videoFormat = NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
-    encodeConfig_.encodeCodecConfig.h264Config.h264VUIParameters.colourDescriptionPresentFlag = 1;
-    encodeConfig_.encodeCodecConfig.h264Config.h264VUIParameters.colourPrimaries = NV_ENC_VUI_COLOR_PRIMARIES_BT709;
-    encodeConfig_.encodeCodecConfig.h264Config.h264VUIParameters.transferCharacteristics = NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
-    encodeConfig_.encodeCodecConfig.h264Config.h264VUIParameters.colourMatrix = NV_ENC_VUI_MATRIX_COEFFS_BT709;
-    encodeConfig_.encodeCodecConfig.h264Config.h264VUIParameters.videoFullRangeFlag = 1;
+    encodeConfig_.encodeCodecConfig.hevcConfig.repeatSPSPPS = 1;
+    encodeConfig_.encodeCodecConfig.hevcConfig.idrPeriod = NVENC_INFINITE_GOPLENGTH;
+    encodeConfig_.encodeCodecConfig.hevcConfig.sliceMode = 0;
+    encodeConfig_.encodeCodecConfig.hevcConfig.sliceModeData = 0;
 
-    initParams_ = {};
+    encodeConfig_.encodeCodecConfig.hevcConfig.hevcVUIParameters.videoFormat = NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
+    encodeConfig_.encodeCodecConfig.hevcConfig.hevcVUIParameters.colourDescriptionPresentFlag = 1;
+    encodeConfig_.encodeCodecConfig.hevcConfig.hevcVUIParameters.colourPrimaries = NV_ENC_VUI_COLOR_PRIMARIES_BT709;
+    encodeConfig_.encodeCodecConfig.hevcConfig.hevcVUIParameters.transferCharacteristics = NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
+    encodeConfig_.encodeCodecConfig.hevcConfig.hevcVUIParameters.colourMatrix = NV_ENC_VUI_MATRIX_COEFFS_BT709;
+    encodeConfig_.encodeCodecConfig.hevcConfig.hevcVUIParameters.videoFullRangeFlag = 1;
+
     initParams_.version = NV_ENC_INITIALIZE_PARAMS_VER;
     initParams_.encodeGUID = codecGuid;
     initParams_.presetGUID = presetGuid;

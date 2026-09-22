@@ -60,7 +60,7 @@ void WebRTCStreamer::CreatePeerConnection() {
     });
 
     rtc::Description::Video media("video", rtc::Description::Direction::SendOnly);
-    media.addH264Codec(96);
+    media.addH265Codec(96);
     media.addSSRC(rtpSsrc_, "video-stream");
     videoTrack_ = pc_->addTrack(media);
 
@@ -301,37 +301,41 @@ bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size, uint64_t c
             bool isLastNal = (nalIdx == nals.size() - 1);
 
             if (nalSize <= kMaxRtpPayload) {
-                if (++packetBurstCounter % 4 == 0) {
-                    LARGE_INTEGER tStart, tNow;
-                    QueryPerformanceCounter(&tStart);
-                    do {
-                        QueryPerformanceCounter(&tNow);
-                    } while ((tNow.QuadPart - tStart.QuadPart) < paceDelayTicks);
-                }
-                SendRtpPacket(nalData, nalSize, isLastNal, rtpTimestamp);
+            bool marker = isLastNal;
+            if (++packetBurstCounter % 4 == 0) {
+                LARGE_INTEGER tStart, tNow;
+                QueryPerformanceCounter(&tStart);
+                do {
+                    QueryPerformanceCounter(&tNow);
+                } while ((tNow.QuadPart - tStart.QuadPart) < paceDelayTicks);
+            }
+            SendRtpPacket(nalData, nalSize, marker, rtpTimestamp);
             } else {
-                uint8_t nalHeader = nalData[0];
-                uint8_t fnri = nalHeader & 0xE0;
-                uint8_t nalType = nalHeader & 0x1F;
+                if (nalSize < 2) continue;
+                uint8_t nalHeader0 = nalData[0];
+                uint8_t nalHeader1 = nalData[1];
+                uint8_t nalType = (nalHeader0 >> 1) & 0x3F;
 
-                const uint8_t* payloadData = nalData + 1;
-                size_t payloadRemaining = nalSize - 1;
+                uint8_t payloadHdr0 = (nalHeader0 & 0x81) | (49 << 1);
+                uint8_t payloadHdr1 = nalHeader1;
+
+                const uint8_t* payloadData = nalData + 2;
+                size_t payloadRemaining = nalSize - 2;
                 bool isStart = true;
 
                 while (payloadRemaining > 0) {
-                    size_t chunkPayloadSize = (std::min)(kMaxRtpPayload - 2, payloadRemaining);
+                    size_t chunkPayloadSize = (std::min)(kMaxRtpPayload - 3, payloadRemaining);
                     bool isEnd = (chunkPayloadSize == payloadRemaining);
 
-                    uint8_t fuIndicator = fnri | 28;
                     uint8_t fuHeader = (isStart ? 0x80 : 0x00) | (isEnd ? 0x40 : 0x00) | nalType;
 
-                    std::vector<uint8_t> fuPacket(2 + chunkPayloadSize);
-                    fuPacket[0] = fuIndicator;
-                    fuPacket[1] = fuHeader;
-                    std::memcpy(fuPacket.data() + 2, payloadData, chunkPayloadSize);
+                    std::vector<uint8_t> fuPacket(3 + chunkPayloadSize);
+                    fuPacket[0] = payloadHdr0;
+                    fuPacket[1] = payloadHdr1;
+                    fuPacket[2] = fuHeader;
+                    std::memcpy(fuPacket.data() + 3, payloadData, chunkPayloadSize);
 
                     bool marker = isLastNal && isEnd;
-
                     if (++packetBurstCounter % 4 == 0) {
                         LARGE_INTEGER tStart, tNow;
                         QueryPerformanceCounter(&tStart);
@@ -339,7 +343,6 @@ bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size, uint64_t c
                             QueryPerformanceCounter(&tNow);
                         } while ((tNow.QuadPart - tStart.QuadPart) < paceDelayTicks);
                     }
-
                     SendRtpPacket(fuPacket.data(), fuPacket.size(), marker, rtpTimestamp);
 
                     payloadData += chunkPayloadSize;

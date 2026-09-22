@@ -51,7 +51,7 @@ bool FFmpegD3D11VADecoder::Initialize(ID3D11Device* device, ID3D11DeviceContext*
     device_ = device;
     context_ = context;
 
-    codec_ = avcodec_find_decoder(AV_CODEC_ID_H264);
+    codec_ = avcodec_find_decoder(AV_CODEC_ID_HEVC);
     if (!codec_) {
         Shutdown();
         return false;

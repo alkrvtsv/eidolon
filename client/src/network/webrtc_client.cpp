@@ -219,8 +219,8 @@ void WebRTCClient::DispatchAssembledFrame() {
                 if (buf[i] == 0 && buf[i + 1] == 0 && ((buf[i + 2] == 1) || (buf[i + 2] == 0 && buf[i + 3] == 1))) {
                     size_t typeIdx = (buf[i + 2] == 1) ? (i + 3) : (i + 4);
                     if (typeIdx < bufSize) {
-                        uint8_t nType = buf[typeIdx] & 0x1F;
-                        if (nType == 7) {
+                        uint8_t nType = (buf[typeIdx] >> 1) & 0x3F;
+                        if (nType == 32 || nType == 33 || nType == 34) {
                             receivedSpsPps_ = true;
                             break;
                         }
@@ -268,15 +268,16 @@ void WebRTCClient::ProcessOrderedPacket(const uint8_t* data, size_t size) {
         return;
     }
 
-    uint8_t nalType = payload[0] & 0x1F;
+    uint8_t nalType = (payload[0] >> 1) & 0x3F;
 
-    if (nalType == 28) {
-        if (payloadSize < 2) return;
-        uint8_t fuIndicator = payload[0];
-        uint8_t fuHeader = payload[1];
+    if (nalType == 49) {
+        if (payloadSize < 3) return;
+        uint8_t payloadHdr0 = payload[0];
+        uint8_t payloadHdr1 = payload[1];
+        uint8_t fuHeader = payload[2];
         bool isStart = (fuHeader & 0x80) != 0;
         bool isEnd = (fuHeader & 0x40) != 0;
-        uint8_t reconstructedType = (fuIndicator & 0xE0) | (fuHeader & 0x1F);
+        uint8_t originalNalType = fuHeader & 0x3F;
 
         if (isStart) {
             fuBuffer_.clear();
@@ -284,15 +285,18 @@ void WebRTCClient::ProcessOrderedPacket(const uint8_t* data, size_t size) {
             fuBuffer_.push_back(0);
             fuBuffer_.push_back(0);
             fuBuffer_.push_back(1);
-            fuBuffer_.push_back(reconstructedType);
-            fuBuffer_.insert(fuBuffer_.end(), payload + 2, payload + payloadSize);
-        } else if (!fuBuffer_.empty()) {
-            fuBuffer_.insert(fuBuffer_.end(), payload + 2, payload + payloadSize);
+            uint8_t reconstructedHdr0 = (payloadHdr0 & 0x81) | (originalNalType << 1);
+            uint8_t reconstructedHdr1 = payloadHdr1;
+            fuBuffer_.push_back(reconstructedHdr0);
+            fuBuffer_.push_back(reconstructedHdr1);
         }
 
-        if (isEnd && !fuBuffer_.empty()) {
-            assembledFrameBuffer_.insert(assembledFrameBuffer_.end(), fuBuffer_.begin(), fuBuffer_.end());
-            fuBuffer_.clear();
+        if (!fuBuffer_.empty()) {
+            fuBuffer_.insert(fuBuffer_.end(), payload + 3, payload + payloadSize);
+            if (isEnd) {
+                assembledFrameBuffer_.insert(assembledFrameBuffer_.end(), fuBuffer_.begin(), fuBuffer_.end());
+                fuBuffer_.clear();
+            }
         }
     } else {
         assembledFrameBuffer_.push_back(0);
