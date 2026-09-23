@@ -153,11 +153,19 @@ int main() {
 
         std::atomic<uint64_t> sentFrames{0};
         std::atomic<uint64_t> currentCaptureTimestampUs{0};
+        std::atomic<uint64_t> capturedFramesCount{0};
+        std::atomic<uint64_t> lastSendTimestampMs{0};
+        std::atomic<uint64_t> sendFailsCount{0};
 
         encoder.SetEncodedFrameCallback([&](const uint8_t* data, size_t size) {
-            sentFrames++;
+            sentFrames.fetch_add(1, std::memory_order_relaxed);
+            auto nowMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
             if (!streamer.SendVideoFrame(data, size, currentCaptureTimestampUs.load(std::memory_order_relaxed))) {
+                sendFailsCount.fetch_add(1, std::memory_order_relaxed);
                 forceIDR = true;
+            } else {
+                lastSendTimestampMs.store(nowMs, std::memory_order_relaxed);
             }
         });
 
@@ -203,8 +211,28 @@ int main() {
 
         constexpr auto kKeepAliveInterval = std::chrono::milliseconds(100);
         auto lastEncodeTime = std::chrono::steady_clock::now();
+        auto lastAnomalyReportTime = std::chrono::steady_clock::now();
 
         while (true) {
+            if (streamer.IsPeerConnected()) {
+                auto currentMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+                uint64_t lastMs = lastSendTimestampMs.load(std::memory_order_relaxed);
+                if (lastMs > 0 && currentMs > lastMs) {
+                    uint64_t stallDurationMs = currentMs - lastMs;
+                    if (stallDurationMs >= 500) {
+                        auto nowReport = std::chrono::steady_clock::now();
+                        if (std::chrono::duration_cast<std::chrono::milliseconds>(nowReport - lastAnomalyReportTime).count() >= 1000) {
+                            std::cerr << "[Host ANOMALY] Video stream stalled for " << stallDurationMs
+                                    << " ms | Captured: " << capturedFramesCount.load(std::memory_order_relaxed)
+                                    << " | Encoded/Sent: " << sentFrames.load(std::memory_order_relaxed)
+                                    << " | SendFails: " << sendFailsCount.load(std::memory_order_relaxed) << std::endl;
+                            lastAnomalyReportTime = nowReport;
+                        }
+                    }
+                }
+            }
+            
             if (reconfigureEncoderRequested.exchange(false)) {
                 uint32_t fps = sessionFps.load();
                 uint32_t bitrate = sessionBitrate.load();
@@ -258,6 +286,7 @@ int main() {
             auto now = std::chrono::steady_clock::now();
 
             if (status == CaptureStatus::Success && capturedTexture) {
+                capturedFramesCount.fetch_add(1, std::memory_order_relaxed);
                 auto elapsedSinceLast = std::chrono::duration_cast<std::chrono::microseconds>(now - lastEncodeTime);
                 if (elapsedSinceLast.count() < sessionMinIntervalUs.load(std::memory_order_relaxed)) {
                     capturedTexture->Release();

@@ -159,9 +159,19 @@ int main(int argc, char* argv[]) {
     std::ofstream logFile;
     uint64_t loggedFrameIndex = 0;
 
-    std::chrono::high_resolution_clock::time_point decodeStartTime;
+    std::atomic<uint64_t> clientAssembledFrames{0};
+    std::atomic<uint64_t> clientQueuePushFails{0};
+    std::atomic<uint64_t> clientDecodedFrames{0};
+    std::atomic<uint64_t> clientRenderedFrames{0};
+    std::atomic<uint64_t> lastNetFrameReceiveMs{0};
+    std::atomic<uint64_t> lastDecoderOutputMs{0};
+    std::atomic<uint64_t> lastRenderOutputMs{0};
 
+    std::chrono::high_resolution_clock::time_point decodeStartTime;
     decoder.SetFrameCallback([&](const DecodedFrame& frame) {
+        clientDecodedFrames.fetch_add(1, std::memory_order_relaxed);
+        lastDecoderOutputMs.store(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count()), std::memory_order_relaxed);
         auto decodeEndTime = std::chrono::high_resolution_clock::now();
         metrics.decodeTimeMs = std::chrono::duration<float, std::milli>(decodeEndTime - decodeStartTime).count();
 
@@ -232,40 +242,68 @@ int main(int argc, char* argv[]) {
             }
 
             while (videoQueue.Empty() && renderRunning.load(std::memory_order_relaxed)) {
-                WaitForSingleObject(videoEvent, INFINITE);
-                if (pendingResize.load(std::memory_order_relaxed) || toggleHudRequested.load(std::memory_order_relaxed)) {
-                    break;
+            DWORD waitRes = WaitForSingleObject(videoEvent, 16);
+            if (waitRes == WAIT_TIMEOUT && client.IsConnected()) {
+                auto nowMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+                uint64_t lastNet = lastNetFrameReceiveMs.load(std::memory_order_relaxed);
+                if (lastNet > 0 && nowMs > lastNet && (nowMs - lastNet) >= 500) {
+                    static auto lastNetAlert = std::chrono::steady_clock::now();
+                    auto nowAlert = std::chrono::steady_clock::now();
+                    if (std::chrono::duration_cast<std::chrono::milliseconds>(nowAlert - lastNetAlert).count() >= 1000) {
+                        std::cerr << "[Client ANOMALY] Network stall: no video packets for "
+                                  << (nowMs - lastNet) << " ms | Assembled: "
+                                  << clientAssembledFrames.load(std::memory_order_relaxed) << std::endl;
+                        lastNetAlert = nowAlert;
+                    }
                 }
             }
 
-            if (!renderRunning.load(std::memory_order_relaxed)) {
+            if (pendingResize.load(std::memory_order_relaxed) || toggleHudRequested.load(std::memory_order_relaxed)) {
                 break;
             }
+        }
 
-            if (videoQueue.Empty()) {
-                continue;
-            }
+        if (!renderRunning.load(std::memory_order_relaxed)) {
+            break;
+        }
 
-            auto w0 = std::chrono::high_resolution_clock::now();
-            renderer.WaitForFrameLatency(50);
-            auto w1 = std::chrono::high_resolution_clock::now();
-            metrics.waitLatencyMs = std::chrono::duration<float, std::milli>(w1 - w0).count();
+        if (videoQueue.Empty()) {
+            continue;
+        }
 
-            while (videoQueue.Size() > 2) {
-                EncodedVideoPacket stalePkt;
-                if (videoQueue.Pop(stalePkt)) {
-                    decoder.Decode(stalePkt.data.data(), stalePkt.data.size(), false);
+        auto w0 = std::chrono::high_resolution_clock::now();
+        renderer.WaitForFrameLatency(50);
+        auto w1 = std::chrono::high_resolution_clock::now();
+        metrics.waitLatencyMs = std::chrono::duration<float, std::milli>(w1 - w0).count();
+
+        EncodedVideoPacket pkt;
+        if (videoQueue.Pop(pkt)) {
+            metrics.frameSizeKb = static_cast<float>(pkt.data.size()) / 1024.0f;
+            metrics.videoQueueSize = videoQueue.Size();
+
+            decodeStartTime = std::chrono::high_resolution_clock::now();
+            decoder.Decode(pkt.data.data(), pkt.data.size(), true);
+            frameCount++;
+            clientRenderedFrames.fetch_add(1, std::memory_order_relaxed);
+            lastRenderOutputMs.store(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count()), std::memory_order_relaxed);
+        } else {
+            auto nowMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+            uint64_t lastDec = lastDecoderOutputMs.load(std::memory_order_relaxed);
+            if (lastDec > 0 && nowMs > lastDec && (nowMs - lastDec) >= 500) {
+                static auto lastDecAlert = std::chrono::steady_clock::now();
+                auto nowAlert = std::chrono::steady_clock::now();
+                if (std::chrono::duration_cast<std::chrono::milliseconds>(nowAlert - lastDecAlert).count() >= 1000) {
+                    std::cerr << "[Client ANOMALY] Decoder/Render stall | QSize: " << videoQueue.Size()
+                              << " | QPushFail: " << clientQueuePushFails.load(std::memory_order_relaxed)
+                              << " | Decoded: " << clientDecodedFrames.load(std::memory_order_relaxed)
+                              << " | Rendered: " << clientRenderedFrames.load(std::memory_order_relaxed) << std::endl;
+                    lastDecAlert = nowAlert;
                 }
             }
-
-            EncodedVideoPacket pkt;
-            if (videoQueue.Pop(pkt)) {
-                metrics.videoQueueSize = videoQueue.Size();
-                metrics.frameSizeKb = static_cast<float>(pkt.data.size()) / 1024.0f;
-                decodeStartTime = std::chrono::high_resolution_clock::now();
-                decoder.Decode(pkt.data.data(), pkt.data.size(), true);
-                frameCount++;
-            }
+        }
 
             auto now = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFpsTime).count();
@@ -289,10 +327,18 @@ int main(int argc, char* argv[]) {
         metrics.frameIntervalMs = interval;
         metrics.frameJitterMs = std::abs(interval - targetIntervalMs);
 
+        clientAssembledFrames.fetch_add(1, std::memory_order_relaxed);
+        lastNetFrameReceiveMs.store(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch()).count()), std::memory_order_relaxed);
+
         EncodedVideoPacket pkt;
         pkt.data.assign(data, data + size);
         pkt.captureTimestampUs = timestampUs;
+
         if (videoQueue.Push(std::move(pkt))) {
+            SetEvent(videoEvent);
+        } else {
+            clientQueuePushFails.fetch_add(1, std::memory_order_relaxed);
             SetEvent(videoEvent);
         }
     });
