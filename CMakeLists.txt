@@ -12,3 +12,14 @@ endif()
 add_subdirectory(common)
 add_subdirectory(host)
 add_subdirectory(client)
+
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+add_custom_target(generate_structure_dump ALL
+    COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/structure.py"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Post-build: Generating updated project structure dump..."
+    VERBATIM
+)
+
+add_dependencies(generate_structure_dump eidolon_host eidolon_client)
