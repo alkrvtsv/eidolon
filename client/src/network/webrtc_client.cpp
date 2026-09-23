@@ -180,26 +180,30 @@ void WebRTCClient::OnRtpPacketReceived(const uint8_t* data, size_t size) {
 }
 
 void WebRTCClient::DrainReorderBuffer() {
-    constexpr size_t kMaxReorderWindow = 16;
-
     while (!reorderBuffer_.empty()) {
         auto it = reorderBuffer_.begin();
         uint16_t seq = it->first;
 
         if (seq == nextExpectedSeq_) {
             ProcessOrderedPacket(it->second.data(), it->second.size());
-            nextExpectedSeq_ = static_cast<uint16_t>(seq + 1);
+            nextExpectedSeq_ = static_cast<uint16_t>(nextExpectedSeq_ + 1);
             reorderBuffer_.erase(it);
-        } else if (reorderBuffer_.size() >= kMaxReorderWindow) {
+        } else if (reorderBuffer_.size() >= 16) {
             uint16_t lost = static_cast<uint16_t>(seq - nextExpectedSeq_);
             lostPacketCount_ += lost;
             periodLostPackets_ += lost;
             isFrameCorrupted_ = true;
             fuBuffer_.clear();
-
             std::cerr << "[WebRTC RTP DROP] Lost " << lost << " packets! Frame corrupted. Expected seq: "
                       << nextExpectedSeq_ << ", advancing to: " << seq
                       << " (Total lost: " << lostPacketCount_ << ")" << std::endl;
+
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastIdrRequestTime_).count();
+            if (elapsed >= 150) {
+                lastIdrRequestTime_ = now;
+                RequestIDR();
+            }
 
             ProcessOrderedPacket(it->second.data(), it->second.size());
             nextExpectedSeq_ = static_cast<uint16_t>(seq + 1);

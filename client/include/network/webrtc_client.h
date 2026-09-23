@@ -94,7 +94,7 @@ private:
     bool hasFrameData_{false};
     bool receivedSpsPps_{false};
     bool isFrameCorrupted_{false};
-
+    std::chrono::steady_clock::time_point lastIdrRequestTime_{};
     uint64_t lostPacketCount_{0};
 
     uint32_t periodReceivedPackets_{0};
