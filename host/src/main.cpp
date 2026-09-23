@@ -156,9 +156,6 @@ int main() {
 
         encoder.SetEncodedFrameCallback([&](const uint8_t* data, size_t size) {
             sentFrames++;
-            if (sentFrames == 1 || sentFrames % 120 == 0) {
-                std::cout << "[Host Pipeline] Sent Frame #" << sentFrames << " (" << size << " bytes)" << std::endl;
-            }
             if (!streamer.SendVideoFrame(data, size, currentCaptureTimestampUs.load(std::memory_order_relaxed))) {
                 forceIDR = true;
             }
