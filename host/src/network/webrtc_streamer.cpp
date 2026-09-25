@@ -285,12 +285,6 @@ bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size, uint64_t c
         }
 
         constexpr size_t kMaxRtpPayload = 1120;
-        size_t packetBurstCounter = 0;
-
-        LARGE_INTEGER qpcFreq;
-        QueryPerformanceFrequency(&qpcFreq);
-        const int64_t ticksPerMicrosecond = qpcFreq.QuadPart / 1000000;
-        const int64_t paceDelayTicks = 150 * ticksPerMicrosecond;
 
         for (size_t nalIdx = 0; nalIdx < nals.size(); ++nalIdx) {
             const auto& nal = nals[nalIdx];
@@ -301,15 +295,8 @@ bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size, uint64_t c
             bool isLastNal = (nalIdx == nals.size() - 1);
 
             if (nalSize <= kMaxRtpPayload) {
-            bool marker = isLastNal;
-            if (++packetBurstCounter % 4 == 0) {
-                LARGE_INTEGER tStart, tNow;
-                QueryPerformanceCounter(&tStart);
-                do {
-                    QueryPerformanceCounter(&tNow);
-                } while ((tNow.QuadPart - tStart.QuadPart) < paceDelayTicks);
-            }
-            SendRtpPacket(nalData, nalSize, marker, rtpTimestamp);
+                bool marker = isLastNal;
+                SendRtpPacket(nalData, nalSize, marker, rtpTimestamp);
             } else {
                 if (nalSize < 2) continue;
                 uint8_t nalHeader0 = nalData[0];
@@ -336,13 +323,6 @@ bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size, uint64_t c
                     std::memcpy(fuPacket.data() + 3, payloadData, chunkPayloadSize);
 
                     bool marker = isLastNal && isEnd;
-                    if (++packetBurstCounter % 4 == 0) {
-                        LARGE_INTEGER tStart, tNow;
-                        QueryPerformanceCounter(&tStart);
-                        do {
-                            QueryPerformanceCounter(&tNow);
-                        } while ((tNow.QuadPart - tStart.QuadPart) < paceDelayTicks);
-                    }
                     SendRtpPacket(fuPacket.data(), fuPacket.size(), marker, rtpTimestamp);
 
                     payloadData += chunkPayloadSize;
