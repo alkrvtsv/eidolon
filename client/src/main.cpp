@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <windows.h>
 
 using json = nlohmann::json;
@@ -42,9 +43,13 @@ static void EnableHighDPI() {
     SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
 }
 
+struct CursorShapeEventData {
+    CursorShapeMessage shape;
+    uint8_t* pixels;
+};
+
 int main(int argc, char* argv[]) {
     EnableHighDPI();
-
     rtc::InitLogger(rtc::LogLevel::Warning);
 
     std::string signalingUrl = "ws://192.168.1.13:8080";
@@ -78,6 +83,9 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "[Client] Detected display: " << screenWidth << "x" << screenHeight
               << " @" << screenRefreshRate << "Hz" << std::endl;
+
+    Uint32 cursorShapeEventId = SDL_RegisterEvents(2);
+    Uint32 cursorPositionEventId = cursorShapeEventId + 1;
 
     uint32_t windowWidth = screenWidth;
     uint32_t windowHeight = screenHeight;
@@ -347,12 +355,30 @@ int main(int argc, char* argv[]) {
         audioPlayer.DecodeAndPlay(data, size);
     });
 
-    client.SetCursorShapeCallback([&](const CursorShapeMessage& shape, const uint8_t* data) {
-        inputHandler.UpdateCursorShape(shape, data);
+        client.SetCursorShapeCallback([&, cursorShapeEventId](const CursorShapeMessage& shape, const uint8_t* data) {
+        if (!data || shape.width == 0 || shape.height == 0) return;
+        if (shape.width > 256 || shape.height > 256) return;
+        size_t expectedSize = static_cast<size_t>(shape.width) * shape.height * 4;
+        if (shape.dataSize != expectedSize) return;
+        auto* eventData = new CursorShapeEventData();
+        eventData->shape = shape;
+        eventData->pixels = new uint8_t[expectedSize];
+        std::memcpy(eventData->pixels, data, expectedSize);
+        SDL_Event event;
+        SDL_zero(event);
+        event.type = cursorShapeEventId;
+        event.user.data1 = eventData;
+        event.user.data2 = nullptr;
+        SDL_PushEvent(&event);
     });
-
-    client.SetCursorPositionCallback([&](const CursorPositionMessage& pos) {
-        inputHandler.UpdateCursorPosition(pos);
+    client.SetCursorPositionCallback([&, cursorPositionEventId](const CursorPositionMessage& pos) {
+        auto* posData = new CursorPositionMessage(pos);
+        SDL_Event event;
+        SDL_zero(event);
+        event.type = cursorPositionEventId;
+        event.user.data1 = posData;
+        event.user.data2 = nullptr;
+        SDL_PushEvent(&event);
     });
 
     rtc::WebSocket ws;
@@ -383,7 +409,20 @@ int main(int argc, char* argv[]) {
 
     while (running) {
         while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_QUIT) {
+            if (event.type == cursorShapeEventId) {
+                auto* eventData = static_cast<CursorShapeEventData*>(event.user.data1);
+                if (eventData) {
+                    inputHandler.UpdateCursorShape(eventData->shape, eventData->pixels);
+                    delete[] eventData->pixels;
+                    delete eventData;
+                }
+            } else if (event.type == cursorPositionEventId) {
+                auto* posData = static_cast<CursorPositionMessage*>(event.user.data1);
+                if (posData) {
+                    inputHandler.UpdateCursorPosition(*posData);
+                    delete posData;
+                }
+            } else if (event.type == SDL_QUIT) {
                 running = false;
             } else if (event.type == SDL_KEYDOWN) {
                 bool isCtrl = (SDL_GetModState() & KMOD_CTRL) != 0;
