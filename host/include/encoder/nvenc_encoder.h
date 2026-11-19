@@ -44,6 +44,8 @@ private:
     };
 
     bool EncodeSlot(int slotIndex, bool forceIDR);
+    void DrainPendingCommands();
+    void ApplyBitrateChange(uint32_t bitrateBps);
 
     HMODULE nvencModule_{nullptr};
     std::unique_ptr<NV_ENCODE_API_FUNCTION_LIST> nvApi_;
@@ -61,5 +63,7 @@ private:
     int lastValidSlot_{-1};
 
     std::atomic<uint32_t> currentBitrate_{0};
+    std::atomic<uint32_t> pendingBitrate_{0};
+    std::atomic<bool> hasPendingBitrate_{false};
     std::function<void(const uint8_t*, size_t)> encodedCallback_;
 };

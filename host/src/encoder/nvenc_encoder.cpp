@@ -112,6 +112,8 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     }
 
     currentBitrate_.store(config_.bitRate, std::memory_order_relaxed);
+    pendingBitrate_.store(0, std::memory_order_relaxed);
+    hasPendingBitrate_.store(false, std::memory_order_relaxed);
 
     D3D11_TEXTURE2D_DESC texDesc = {};
     texDesc.Width = config_.width;
@@ -201,6 +203,8 @@ void NVENCEncoder::Shutdown() noexcept {
     lastValidSlot_ = -1;
     currentSlot_ = 0;
     currentBitrate_.store(0, std::memory_order_relaxed);
+    pendingBitrate_.store(0, std::memory_order_relaxed);
+    hasPendingBitrate_.store(false, std::memory_order_relaxed);
 }
 
 ID3D11Texture2D* NVENCEncoder::GetNextInputTexture() {
@@ -208,6 +212,23 @@ ID3D11Texture2D* NVENCEncoder::GetNextInputTexture() {
 }
 
 void NVENCEncoder::SetBitrate(uint32_t bitrateBps) {
+    if (bitrateBps == 0) {
+        return;
+    }
+    pendingBitrate_.store(bitrateBps, std::memory_order_relaxed);
+    hasPendingBitrate_.store(true, std::memory_order_release);
+}
+
+void NVENCEncoder::DrainPendingCommands() {
+    if (!hasPendingBitrate_.load(std::memory_order_acquire)) {
+        return;
+    }
+    uint32_t newBitrate = pendingBitrate_.load(std::memory_order_relaxed);
+    hasPendingBitrate_.store(false, std::memory_order_release);
+    ApplyBitrateChange(newBitrate);
+}
+
+void NVENCEncoder::ApplyBitrateChange(uint32_t bitrateBps) {
     if (!encoder_ || !nvApi_) {
         return;
     }
@@ -245,6 +266,8 @@ bool NVENCEncoder::EncodeSlot(int slotIndex, bool forceIDR) {
     if (!nvApi_ || !encoder_ || slotIndex < 0 || slotIndex >= kSlotCount) {
         return false;
     }
+
+    DrainPendingCommands();
 
     auto& slot = slots_[slotIndex];
 
