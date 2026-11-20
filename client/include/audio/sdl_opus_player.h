@@ -3,6 +3,7 @@
 #include "audio/audio_player.h"
 #include <SDL2/SDL.h>
 #include <opus/opus.h>
+#include <atomic>
 
 class SDLOpusPlayer final : public IAudioPlayer {
 public:
@@ -11,8 +12,8 @@ public:
 
     bool Initialize() override;
     void Shutdown() noexcept override;
-
     bool DecodeAndPlay(const uint8_t* data, size_t size) override;
+    bool TryOpenDevice();
 
 private:
     static constexpr int kSampleRate = 48000;
@@ -21,6 +22,7 @@ private:
     static constexpr uint32_t kMaxLatencyBytes = (kSampleRate * kChannels * sizeof(float) * 100) / 1000;
 
     OpusDecoder* decoder_{nullptr};
-    SDL_AudioDeviceID deviceId_{0};
+    std::atomic<SDL_AudioDeviceID> deviceId_{0};
+    bool audioSubsystemReady_{false};
     float pcmOutBuffer_[kMaxFrameSize * kChannels]{};
 };

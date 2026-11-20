@@ -18,7 +18,24 @@ bool SDLOpusPlayer::Initialize() {
     }
 
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
+        std::cerr << "[Client ERROR] SDL_InitSubSystem(AUDIO) failed: " << SDL_GetError() << std::endl;
         Shutdown();
+        return false;
+    }
+    audioSubsystemReady_ = true;
+
+    if (!TryOpenDevice()) {
+        std::cerr << "[Client WARNING] No audio output device found, waiting for connection..." << std::endl;
+    }
+
+    return true;
+}
+
+bool SDLOpusPlayer::TryOpenDevice() {
+    if (deviceId_.load(std::memory_order_acquire) != 0) {
+        return true;
+    }
+    if (!audioSubsystemReady_) {
         return false;
     }
 
@@ -30,33 +47,35 @@ bool SDLOpusPlayer::Initialize() {
     desiredSpec.callback = nullptr;
 
     SDL_AudioSpec obtainedSpec = {};
-    deviceId_ = SDL_OpenAudioDevice(nullptr, 0, &desiredSpec, &obtainedSpec, 0);
-    if (deviceId_ == 0) {
-        std::cerr << "[Client ERROR] SDL_OpenAudioDevice failed: " << SDL_GetError() << std::endl;
-        Shutdown();
+    SDL_AudioDeviceID newDeviceId = SDL_OpenAudioDevice(nullptr, 0, &desiredSpec, &obtainedSpec, 0);
+    if (newDeviceId == 0) {
         return false;
     }
 
-    SDL_PauseAudioDevice(deviceId_, 0);
+    deviceId_.store(newDeviceId, std::memory_order_release);
+    SDL_PauseAudioDevice(newDeviceId, 0);
+    std::cout << "[Client] Audio device connected, playback started" << std::endl;
     return true;
 }
 
 void SDLOpusPlayer::Shutdown() noexcept {
-    if (deviceId_ != 0) {
-        SDL_CloseAudioDevice(deviceId_);
-        deviceId_ = 0;
+    SDL_AudioDeviceID dev = deviceId_.exchange(0, std::memory_order_acq_rel);
+    if (dev != 0) {
+        SDL_CloseAudioDevice(dev);
     }
-
     if (decoder_) {
         opus_decoder_destroy(decoder_);
         decoder_ = nullptr;
     }
-
-    SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    if (audioSubsystemReady_) {
+        SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        audioSubsystemReady_ = false;
+    }
 }
 
 bool SDLOpusPlayer::DecodeAndPlay(const uint8_t* data, size_t size) {
-    if (!decoder_ || deviceId_ == 0 || !data || size == 0) {
+    SDL_AudioDeviceID dev = deviceId_.load(std::memory_order_acquire);
+    if (!decoder_ || dev == 0 || !data || size == 0) {
         return false;
     }
 
@@ -73,11 +92,11 @@ bool SDLOpusPlayer::DecodeAndPlay(const uint8_t* data, size_t size) {
         return false;
     }
 
-    uint32_t currentQueuedBytes = SDL_GetQueuedAudioSize(deviceId_);
+    uint32_t currentQueuedBytes = SDL_GetQueuedAudioSize(dev);
     if (currentQueuedBytes > kMaxLatencyBytes) {
-        SDL_ClearQueuedAudio(deviceId_);
+        SDL_ClearQueuedAudio(dev);
     }
 
     uint32_t bytesToWrite = static_cast<uint32_t>(samplesDecoded * kChannels * sizeof(float));
-    return SDL_QueueAudio(deviceId_, pcmOutBuffer_, bytesToWrite) == 0;
+    return SDL_QueueAudio(dev, pcmOutBuffer_, bytesToWrite) == 0;
 }

@@ -452,6 +452,8 @@ int main(int argc, char* argv[]) {
                 } else {
                     inputHandler.ProcessEvent(event);
                 }
+            } else if (event.type == SDL_AUDIODEVICEADDED && event.adevice.iscapture == 0) {
+                audioPlayer.TryOpenDevice();
             } else if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_RESIZED) {
                 RECT curRect = {};
                 GetClientRect(hwnd, &curRect);

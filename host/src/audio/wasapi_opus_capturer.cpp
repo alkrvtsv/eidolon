@@ -26,49 +26,87 @@ WasapiOpusCapturer::~WasapiOpusCapturer() noexcept {
     Shutdown();
 }
 
-bool WasapiOpusCapturer::Initialize() {
-    Shutdown();
+ULONG STDMETHODCALLTYPE WasapiOpusCapturer::AddRef() {
+    return refCount_.fetch_add(1, std::memory_order_relaxed) + 1;
+}
 
-    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    if (SUCCEEDED(hr)) {
-        comInitialized_ = true;
-    } else if (hr == RPC_E_CHANGED_MODE) {
-        comInitialized_ = false;
-    } else {
+ULONG STDMETHODCALLTYPE WasapiOpusCapturer::Release() {
+    return refCount_.fetch_sub(1, std::memory_order_acq_rel) - 1;
+}
+
+HRESULT STDMETHODCALLTYPE WasapiOpusCapturer::QueryInterface(REFIID riid, void** ppvObject) {
+    if (!ppvObject) return E_POINTER;
+    if (riid == __uuidof(IUnknown) || riid == __uuidof(IMMNotificationClient)) {
+        *ppvObject = static_cast<IMMNotificationClient*>(this);
+        AddRef();
+        return S_OK;
+    }
+    *ppvObject = nullptr;
+    return E_NOINTERFACE;
+}
+
+HRESULT STDMETHODCALLTYPE WasapiOpusCapturer::OnDeviceStateChanged(LPCWSTR, DWORD) {
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE WasapiOpusCapturer::OnDeviceAdded(LPCWSTR) {
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE WasapiOpusCapturer::OnDeviceRemoved(LPCWSTR) {
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE WasapiOpusCapturer::OnDefaultDeviceChanged(EDataFlow flow, ERole role, LPCWSTR) {
+    if (flow == eRender && role == eConsole) {
+        if (deviceChangedEvent_) {
+            SetEvent(deviceChangedEvent_);
+        }
+    }
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE WasapiOpusCapturer::OnPropertyValueChanged(LPCWSTR, const PROPERTYKEY) {
+    return S_OK;
+}
+
+bool WasapiOpusCapturer::InitializeCodecs() {
+    int opusError = 0;
+    opusEncoder_ = opus_encoder_create(48000, 2, OPUS_APPLICATION_AUDIO, &opusError);
+    if (opusError != OPUS_OK || !opusEncoder_) {
         return false;
     }
+    opus_encoder_ctl(opusEncoder_, OPUS_SET_BITRATE(160000));
+    opus_encoder_ctl(opusEncoder_, OPUS_SET_COMPLEXITY(10));
+    opus_encoder_ctl(opusEncoder_, OPUS_SET_SIGNAL(OPUS_SIGNAL_MUSIC));
+    return true;
+}
 
-    ComPtr<IMMDeviceEnumerator> enumerator;
-    hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
-    if (FAILED(hr)) {
-        Shutdown();
-        return false;
-    }
+bool WasapiOpusCapturer::InitializeDevice() {
+    ShutdownDevice();
+
+    if (!deviceEnumerator_) return false;
 
     ComPtr<IMMDevice> device;
-    hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
+    HRESULT hr = deviceEnumerator_->GetDefaultAudioEndpoint(eRender, eConsole, &device);
     if (FAILED(hr)) {
-        Shutdown();
         return false;
     }
 
     hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &audioClient_);
     if (FAILED(hr)) {
-        Shutdown();
         return false;
     }
 
     WAVEFORMATEX* mixFormat = nullptr;
     hr = audioClient_->GetMixFormat(&mixFormat);
     if (FAILED(hr)) {
-        Shutdown();
         return false;
     }
 
     channels_ = mixFormat->nChannels;
     sampleRate_ = mixFormat->nSamplesPerSec;
     bitsPerSample_ = mixFormat->wBitsPerSample;
-
     if (mixFormat->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
         auto* ext = reinterpret_cast<WAVEFORMATEXTENSIBLE*>(mixFormat);
         isFloat_ = (ext->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
@@ -84,16 +122,13 @@ bool WasapiOpusCapturer::Initialize() {
         mixFormat,
         nullptr
     );
-
     CoTaskMemFree(mixFormat);
     if (FAILED(hr)) {
-        Shutdown();
         return false;
     }
 
     hr = audioClient_->GetService(IID_PPV_ARGS(&captureClient_));
     if (FAILED(hr)) {
-        Shutdown();
         return false;
     }
 
@@ -110,7 +145,6 @@ bool WasapiOpusCapturer::Initialize() {
     AVChannelLayout inLayout;
     av_channel_layout_default(&inLayout, static_cast<int>(channels_));
     AVChannelLayout outLayout = AV_CHANNEL_LAYOUT_STEREO;
-
     int ret = swr_alloc_set_opts2(
         &swrCtx_,
         &outLayout,
@@ -124,13 +158,11 @@ bool WasapiOpusCapturer::Initialize() {
     );
     av_channel_layout_uninit(&inLayout);
     if (ret < 0 || !swrCtx_) {
-        Shutdown();
         return false;
     }
 #else
     int64_t inLayout = av_get_default_channel_layout(static_cast<int>(channels_));
     int64_t outLayout = AV_CH_LAYOUT_STEREO;
-
     swrCtx_ = swr_alloc_set_opts(
         nullptr,
         outLayout,
@@ -143,42 +175,93 @@ bool WasapiOpusCapturer::Initialize() {
         nullptr
     );
     if (!swrCtx_) {
-        Shutdown();
         return false;
     }
 #endif
 
     if (swr_init(swrCtx_) < 0) {
+        return false;
+    }
+
+    deviceReady_ = true;
+    return true;
+}
+
+void WasapiOpusCapturer::ShutdownDevice() noexcept {
+    if (audioClient_) {
+        audioClient_->Stop();
+    }
+    captureClient_.Reset();
+    audioClient_.Reset();
+    if (swrCtx_) {
+        swr_free(&swrCtx_);
+        swrCtx_ = nullptr;
+    }
+    deviceReady_ = false;
+}
+
+bool WasapiOpusCapturer::Initialize() {
+    Shutdown();
+
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (SUCCEEDED(hr)) {
+        comInitialized_ = true;
+    } else if (hr == RPC_E_CHANGED_MODE) {
+        comInitialized_ = false;
+    } else {
+        return false;
+    }
+
+    deviceChangedEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!deviceChangedEvent_) {
         Shutdown();
         return false;
     }
 
-    int opusError = 0;
-    opusEncoder_ = opus_encoder_create(48000, 2, OPUS_APPLICATION_AUDIO, &opusError);
-    if (opusError != OPUS_OK || !opusEncoder_) {
+    hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&deviceEnumerator_));
+    if (FAILED(hr)) {
         Shutdown();
         return false;
     }
 
-    opus_encoder_ctl(opusEncoder_, OPUS_SET_BITRATE(160000));
-    opus_encoder_ctl(opusEncoder_, OPUS_SET_COMPLEXITY(10));
-    opus_encoder_ctl(opusEncoder_, OPUS_SET_SIGNAL(OPUS_SIGNAL_MUSIC));
+    hr = deviceEnumerator_->RegisterEndpointNotificationCallback(this);
+    if (FAILED(hr)) {
+        Shutdown();
+        return false;
+    }
+
+    if (!InitializeCodecs()) {
+        Shutdown();
+        return false;
+    }
+
+    if (!InitializeDevice()) {
+        std::cerr << "[Host] Audio device not found, waiting for device connection..." << std::endl;
+    }
 
     return true;
 }
 
 void WasapiOpusCapturer::Shutdown() noexcept {
     Stop();
+
+    if (deviceEnumerator_) {
+        deviceEnumerator_->UnregisterEndpointNotificationCallback(this);
+        deviceEnumerator_.Reset();
+    }
+
     if (opusEncoder_) {
         opus_encoder_destroy(opusEncoder_);
         opusEncoder_ = nullptr;
     }
-    if (swrCtx_) {
-        swr_free(&swrCtx_);
-        swrCtx_ = nullptr;
+
+    ShutdownDevice();
+
+    if (deviceChangedEvent_) {
+        CloseHandle(deviceChangedEvent_);
+        deviceChangedEvent_ = nullptr;
     }
-    captureClient_.Reset();
-    audioClient_.Reset();
+
     if (comInitialized_) {
         CoUninitialize();
         comInitialized_ = false;
@@ -187,15 +270,16 @@ void WasapiOpusCapturer::Shutdown() noexcept {
 
 bool WasapiOpusCapturer::Start() {
     if (running_.exchange(true)) return true;
-    if (!audioClient_ || !captureClient_ || !opusEncoder_ || !swrCtx_) {
+    if (!opusEncoder_) {
         running_ = false;
         return false;
     }
 
-    HRESULT hr = audioClient_->Start();
-    if (FAILED(hr)) {
-        running_ = false;
-        return false;
+    if (deviceReady_ && audioClient_) {
+        HRESULT hr = audioClient_->Start();
+        if (FAILED(hr)) {
+            deviceReady_ = false;
+        }
     }
 
     captureThread_ = std::thread([this]() {
@@ -210,16 +294,38 @@ bool WasapiOpusCapturer::Start() {
         std::vector<float> ringBuffer(kRingBufferCapacity, 0.0f);
         size_t ringReadPos = 0;
         size_t ringAvailable = 0;
-
         std::vector<float> resampleOutBuffer(kMaxResampleFloats, 0.0f);
         std::vector<float> encodeFrameBuffer(kOpusFrameFloats, 0.0f);
         std::vector<uint8_t> opusPacket(4000);
 
         while (running_) {
+            if (!deviceReady_) {
+                WaitForSingleObject(deviceChangedEvent_, INFINITE);
+                if (!running_) break;
+
+                if (InitializeDevice()) {
+                    HRESULT hrStart = audioClient_->Start();
+                    if (SUCCEEDED(hrStart)) {
+                        std::cout << "[Host] Audio device connected, capture started" << std::endl;
+                        ringReadPos = 0;
+                        ringAvailable = 0;
+                    } else {
+                        deviceReady_ = false;
+                    }
+                }
+                continue;
+            }
+
             UINT32 packetLength = 0;
             HRESULT hrPacket = captureClient_->GetNextPacketSize(&packetLength);
 
-            if (FAILED(hrPacket) || packetLength == 0) {
+            if (FAILED(hrPacket)) {
+                std::cerr << "[Host] Audio device lost, waiting for reconnection..." << std::endl;
+                ShutdownDevice();
+                continue;
+            }
+
+            if (packetLength == 0) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 continue;
             }
@@ -228,12 +334,10 @@ bool WasapiOpusCapturer::Start() {
                 BYTE* data = nullptr;
                 UINT32 numFrames = 0;
                 DWORD flags = 0;
-
                 hrPacket = captureClient_->GetBuffer(&data, &numFrames, &flags, nullptr, nullptr);
                 if (FAILED(hrPacket)) break;
 
                 int convertedSamples = 0;
-
                 if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
                     int64_t dstSamples = av_rescale_rnd(numFrames, 48000, sampleRate_, AV_ROUND_UP);
                     convertedSamples = static_cast<int>(std::min<int64_t>(dstSamples, kMaxResampleFloats / 2));
@@ -243,7 +347,6 @@ bool WasapiOpusCapturer::Start() {
                     if (maxOutSamples > 0 && static_cast<size_t>(maxOutSamples * 2) <= kMaxResampleFloats) {
                         uint8_t* outData[1] = { reinterpret_cast<uint8_t*>(resampleOutBuffer.data()) };
                         const uint8_t* inData[1] = { data };
-
                         convertedSamples = swr_convert(
                             swrCtx_,
                             outData,
@@ -259,7 +362,6 @@ bool WasapiOpusCapturer::Start() {
                 if (convertedSamples > 0) {
                     size_t convertedFloats = static_cast<size_t>(convertedSamples * 2);
                     size_t writePos = (ringReadPos + ringAvailable) % kRingBufferCapacity;
-
                     for (size_t i = 0; i < convertedFloats; ++i) {
                         if (ringAvailable < kRingBufferCapacity) {
                             ringBuffer[writePos] = resampleOutBuffer[i];
@@ -286,7 +388,6 @@ bool WasapiOpusCapturer::Start() {
                         opusPacket.data(),
                         static_cast<opus_int32>(opusPacket.size())
                     );
-
                     if (encodedBytes > 0 && encodedAudioCallback_) {
                         encodedAudioCallback_(opusPacket.data(), static_cast<size_t>(encodedBytes));
                     }
@@ -307,6 +408,9 @@ bool WasapiOpusCapturer::Start() {
 
 void WasapiOpusCapturer::Stop() noexcept {
     if (!running_.exchange(false)) return;
+    if (deviceChangedEvent_) {
+        SetEvent(deviceChangedEvent_);
+    }
     if (captureThread_.joinable()) {
         captureThread_.join();
     }

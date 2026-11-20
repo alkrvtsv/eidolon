@@ -74,8 +74,8 @@ int main() {
         }
 
         WasapiOpusCapturer audioCapturer;
-        if (!audioCapturer.Initialize()) {
-            std::cerr << "[Host WARNING] Audio capturer failed to initialize" << std::endl;
+            if (!audioCapturer.Initialize()) {
+            std::cerr << "[Host WARNING] Audio codecs failed to initialize, audio disabled" << std::endl;
         }
 
         WebRTCStreamer streamer;
