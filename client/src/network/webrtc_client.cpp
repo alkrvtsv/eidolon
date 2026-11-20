@@ -16,13 +16,42 @@ WebRTCClient::~WebRTCClient() noexcept {
 
 bool WebRTCClient::Initialize() {
     Shutdown();
+    RecreatePeerConnection();
+    return true;
+}
+
+void WebRTCClient::RecreatePeerConnection() {
+    if (videoTrack_) { videoTrack_->close(); videoTrack_.reset(); }
+    if (inputChannel_) { inputChannel_->close(); inputChannel_.reset(); }
+    if (audioChannel_) { audioChannel_->close(); audioChannel_.reset(); }
+    if (cursorChannel_) { cursorChannel_->close(); cursorChannel_.reset(); }
+    if (controlChannel_) { controlChannel_->close(); controlChannel_.reset(); }
+    if (pc_) { pc_->close(); pc_.reset(); }
+
+    connected_ = false;
+    hasRemoteDescription_ = false;
+    restartRequested_ = false;
+    peerConnectionGeneration_++;
+    pendingCandidates_.clear();
+    reorderBuffer_.clear();
+    hasExpectedSeq_ = false;
+    nextExpectedSeq_ = 0;
+    assembledFrameBuffer_.clear();
+    fuBuffer_.clear();
+    hasFrameData_ = false;
+    receivedSpsPps_ = false;
+    isFrameCorrupted_ = false;
+    currentFrameTimestamp_ = 0;
 
     rtc::Configuration config;
     config.enableIceTcp = false;
 
     pc_ = std::make_shared<rtc::PeerConnection>(config);
 
-    pc_->onLocalDescription([this](rtc::Description desc) {
+    uint64_t myGeneration = peerConnectionGeneration_;
+
+    pc_->onLocalDescription([this, myGeneration](rtc::Description desc) {
+        if (myGeneration != peerConnectionGeneration_) return;
         std::cout << "[WebRTC Client] Local Description (" << desc.typeString() << ") -> Signaling" << std::endl;
         if (signalingSend_) {
             json msg = { {"type", desc.typeString()}, {"sdp", std::string(desc)} };
@@ -30,17 +59,20 @@ bool WebRTCClient::Initialize() {
         }
     });
 
-    pc_->onLocalCandidate([this](rtc::Candidate cand) {
+    pc_->onLocalCandidate([this, myGeneration](rtc::Candidate cand) {
+        if (myGeneration != peerConnectionGeneration_) return;
         if (signalingSend_) {
             json msg = { {"type", "ice_candidate"}, {"candidate", cand.candidate()}, {"sdpMid", cand.mid()} };
             signalingSend_(msg.dump());
         }
     });
 
-    pc_->onTrack([this](std::shared_ptr<rtc::Track> track) {
+    pc_->onTrack([this, myGeneration](std::shared_ptr<rtc::Track> track) {
+        if (myGeneration != peerConnectionGeneration_) return;
         std::cout << "[WebRTC Client] Inbound Track: " << track->description().type() << std::endl;
         videoTrack_ = track;
-        videoTrack_->onMessage([this](std::variant<rtc::binary, std::string> data) {
+        videoTrack_->onMessage([this, myGeneration](std::variant<rtc::binary, std::string> data) {
+            if (myGeneration != peerConnectionGeneration_) return;
             if (std::holds_alternative<rtc::binary>(data)) {
                 const auto& bin = std::get<rtc::binary>(data);
                 OnRtpPacketReceived(reinterpret_cast<const uint8_t*>(bin.data()), bin.size());
@@ -48,7 +80,8 @@ bool WebRTCClient::Initialize() {
         });
     });
 
-    pc_->onDataChannel([this](std::shared_ptr<rtc::DataChannel> dc) {
+    pc_->onDataChannel([this, myGeneration](std::shared_ptr<rtc::DataChannel> dc) {
+        if (myGeneration != peerConnectionGeneration_) return;
         std::string label = dc->label();
         std::cout << "[WebRTC Client] Inbound DataChannel: " << label << std::endl;
 
@@ -56,7 +89,8 @@ bool WebRTCClient::Initialize() {
             inputChannel_ = dc;
         } else if (label == "audio") {
             audioChannel_ = dc;
-            audioChannel_->onMessage([this](std::variant<rtc::binary, std::string> data) {
+            audioChannel_->onMessage([this, myGeneration](std::variant<rtc::binary, std::string> data) {
+                if (myGeneration != peerConnectionGeneration_) return;
                 if (std::holds_alternative<rtc::binary>(data) && audioCallback_) {
                     const auto& bin = std::get<rtc::binary>(data);
                     audioCallback_(reinterpret_cast<const uint8_t*>(bin.data()), bin.size());
@@ -64,7 +98,8 @@ bool WebRTCClient::Initialize() {
             });
         } else if (label == "cursor") {
             cursorChannel_ = dc;
-            cursorChannel_->onMessage([this](std::variant<rtc::binary, std::string> data) {
+            cursorChannel_->onMessage([this, myGeneration](std::variant<rtc::binary, std::string> data) {
+                if (myGeneration != peerConnectionGeneration_) return;
                 if (std::holds_alternative<rtc::binary>(data)) {
                     const auto& bin = std::get<rtc::binary>(data);
                     if (bin.size() >= sizeof(MessageType)) {
@@ -82,7 +117,8 @@ bool WebRTCClient::Initialize() {
             });
         } else if (label == "control") {
             controlChannel_ = dc;
-            controlChannel_->onOpen([this]() {
+            controlChannel_->onOpen([this, myGeneration]() {
+                if (myGeneration != peerConnectionGeneration_) return;
                 if (hasPendingConfig_) {
                     SendClientConfig(pendingConfig_);
                 }
@@ -91,18 +127,29 @@ bool WebRTCClient::Initialize() {
         }
     });
 
-    pc_->onStateChange([this](rtc::PeerConnection::State state) {
+    pc_->onStateChange([this, myGeneration](rtc::PeerConnection::State state) {
+        if (myGeneration != peerConnectionGeneration_) return;
         std::cout << "[WebRTC Client] State: " << state << std::endl;
         connected_ = (state == rtc::PeerConnection::State::Connected);
+
         if (connected_) {
+            restartRequested_ = false;
             if (hasPendingConfig_) {
                 SendClientConfig(pendingConfig_);
             }
             RequestIDR();
+        } else if (state == rtc::PeerConnection::State::Failed) {
+            connected_ = false;
+            if (!restartRequested_) {
+                restartRequested_ = true;
+                std::cout << "[WebRTC Client] Connection failed -> requesting restart" << std::endl;
+                if (signalingSend_) {
+                    json restartMsg = { {"type", "restart"} };
+                    signalingSend_(restartMsg.dump());
+                }
+            }
         }
     });
-
-    return true;
 }
 
 void WebRTCClient::CheckAndSendFeedback() {
@@ -413,6 +460,10 @@ void WebRTCClient::ProcessSignalingMessage(const std::string& msg) {
 
         if (type == "offer") {
             std::cout << "[WebRTC Client] Received Offer -> Setting Remote Description" << std::endl;
+            if (hasRemoteDescription_) {
+                std::cout << "[WebRTC Client] Recreating PC for new session" << std::endl;
+                RecreatePeerConnection();
+            }
             pc_->setRemoteDescription(rtc::Description(data["sdp"], type));
             hasRemoteDescription_ = true;
 

@@ -58,6 +58,7 @@ private:
     void ProcessOrderedPacket(const uint8_t* data, size_t size);
     void DispatchAssembledFrame();
     void CheckAndSendFeedback();
+    void RecreatePeerConnection();
     bool ContainsKeyframeNal() const;
 
     static bool SequenceLessThan(uint16_t s1, uint16_t s2) noexcept {
@@ -80,6 +81,8 @@ private:
 
     std::atomic<bool> connected_{false};
     bool hasRemoteDescription_{false};
+    uint64_t peerConnectionGeneration_{0};
+    bool restartRequested_{false};
     std::vector<std::pair<std::string, std::string>> pendingCandidates_;
 
     ClientConfigMessage pendingConfig_{};

@@ -179,8 +179,8 @@ void WebRTCStreamer::ProcessSignalingMessage(const std::string& msg) {
         auto data = json::parse(msg);
         std::string type = data.value("type", "");
 
-        if (type == "start_session") {
-            std::cout << "[WebRTC Host] Client connected -> Starting session" << std::endl;
+        if (type == "start_session" || type == "restart") {
+            std::cout << "[WebRTC Host] " << type << " -> Starting session" << std::endl;
             StartSession();
         } else if (type == "answer") {
             std::cout << "[WebRTC Host] Setting remote Answer" << std::endl;
