@@ -1,7 +1,10 @@
 #include "input/windows_input_injector.h"
 
 WindowsInputInjector::WindowsInputInjector() = default;
-WindowsInputInjector::~WindowsInputInjector() noexcept = default;
+
+WindowsInputInjector::~WindowsInputInjector() noexcept {
+    ReleaseAll();
+}
 
 bool WindowsInputInjector::Initialize() {
     return true;
@@ -30,25 +33,31 @@ void WindowsInputInjector::InjectMouseButton(uint8_t button, bool pressed) {
     input.type = INPUT_MOUSE;
 
     switch (button) {
-        case 1: // Left
-            input.mi.dwFlags = pressed ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
-            break;
-        case 2: // Middle
-            input.mi.dwFlags = pressed ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP;
-            break;
-        case 3: // Right
-            input.mi.dwFlags = pressed ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
-            break;
-        case 4: // XBUTTON1
-            input.mi.dwFlags = pressed ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
-            input.mi.mouseData = XBUTTON1;
-            break;
-        case 5: // XBUTTON2
-            input.mi.dwFlags = pressed ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
-            input.mi.mouseData = XBUTTON2;
-            break;
-        default:
-            return;
+    case 1:
+        input.mi.dwFlags = pressed ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
+        break;
+    case 2:
+        input.mi.dwFlags = pressed ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_MIDDLEUP;
+        break;
+    case 3:
+        input.mi.dwFlags = pressed ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
+        break;
+    case 4:
+        input.mi.dwFlags = pressed ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
+        input.mi.mouseData = XBUTTON1;
+        break;
+    case 5:
+        input.mi.dwFlags = pressed ? MOUSEEVENTF_XDOWN : MOUSEEVENTF_XUP;
+        input.mi.mouseData = XBUTTON2;
+        break;
+    default:
+        return;
+    }
+
+    if (pressed) {
+        pressedMouseButtons_.insert(button);
+    } else {
+        pressedMouseButtons_.erase(button);
     }
 
     SendInput(1, &input, sizeof(INPUT));
@@ -86,5 +95,45 @@ void WindowsInputInjector::InjectKeyboard(uint16_t vkCode, bool pressed) {
         input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
     }
 
+    if (pressed) {
+        pressedKeys_.insert(vkCode);
+    } else {
+        pressedKeys_.erase(vkCode);
+    }
+
     SendInput(1, &input, sizeof(INPUT));
+}
+
+void WindowsInputInjector::ReleaseAll() noexcept {
+    for (uint16_t vk : pressedKeys_) {
+        INPUT input = {};
+        input.type = INPUT_KEYBOARD;
+        input.ki.wVk = vk;
+        input.ki.wScan = static_cast<WORD>(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC));
+        input.ki.dwFlags = KEYEVENTF_KEYUP;
+        if ((vk >= VK_PRIOR && vk <= VK_DOWN) ||
+            vk == VK_INSERT || vk == VK_DELETE ||
+            vk == VK_LWIN || vk == VK_RWIN ||
+            vk == VK_RMENU || vk == VK_RCONTROL ||
+            vk == VK_DIVIDE || vk == VK_NUMLOCK) {
+            input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+        }
+        SendInput(1, &input, sizeof(INPUT));
+    }
+    pressedKeys_.clear();
+
+    for (uint8_t btn : pressedMouseButtons_) {
+        INPUT input = {};
+        input.type = INPUT_MOUSE;
+        switch (btn) {
+        case 1: input.mi.dwFlags = MOUSEEVENTF_LEFTUP; break;
+        case 2: input.mi.dwFlags = MOUSEEVENTF_MIDDLEUP; break;
+        case 3: input.mi.dwFlags = MOUSEEVENTF_RIGHTUP; break;
+        case 4: input.mi.dwFlags = MOUSEEVENTF_XUP; input.mi.mouseData = XBUTTON1; break;
+        case 5: input.mi.dwFlags = MOUSEEVENTF_XUP; input.mi.mouseData = XBUTTON2; break;
+        default: continue;
+        }
+        SendInput(1, &input, sizeof(INPUT));
+    }
+    pressedMouseButtons_.clear();
 }

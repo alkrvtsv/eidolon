@@ -181,8 +181,9 @@ int main() {
             streamer.SendCursorPosition(pos);
         });
 
-        bool hasInitialFrame = false;
+        bool wasPeerConnected = false;
 
+        bool hasInitialFrame = false;
         std::cout << "[Host] Waiting for initial desktop frame..." << std::endl;
         while (!hasInitialFrame) {
             ID3D11Texture2D* capturedTexture = nullptr;
@@ -214,6 +215,14 @@ int main() {
         auto lastAnomalyReportTime = std::chrono::steady_clock::now();
 
         while (true) {
+
+            bool isNowConnected = streamer.IsPeerConnected();
+            if (wasPeerConnected && !isNowConnected) {
+                std::cout << "[Host] Peer disconnected -> releasing all keys" << std::endl;
+                inputInjector.ReleaseAll();
+            }
+            wasPeerConnected = isNowConnected;
+
             if (streamer.IsPeerConnected()) {
                 auto currentMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count());
