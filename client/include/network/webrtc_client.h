@@ -58,6 +58,7 @@ private:
     void ProcessOrderedPacket(const uint8_t* data, size_t size);
     void DispatchAssembledFrame();
     void CheckAndSendFeedback();
+    bool ContainsKeyframeNal() const;
 
     static bool SequenceLessThan(uint16_t s1, uint16_t s2) noexcept {
         return static_cast<int16_t>(s1 - s2) < 0;
@@ -94,7 +95,13 @@ private:
     bool hasFrameData_{false};
     bool receivedSpsPps_{false};
     bool isFrameCorrupted_{false};
+    bool waitingForIDR_{false};
+    bool hasGapDetected_{false};
+    std::chrono::steady_clock::time_point gapDetectedTime_{};
+    std::chrono::steady_clock::time_point waitingForIDRSince_{};
     std::chrono::steady_clock::time_point lastIdrRequestTime_{};
+    static constexpr int64_t kReorderTimeoutMs = 8;
+    static constexpr int64_t kIdrWaitSafetyMs = 2000;
     uint64_t lostPacketCount_{0};
 
     uint32_t periodReceivedPackets_{0};

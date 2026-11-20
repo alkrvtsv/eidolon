@@ -180,6 +180,8 @@ void WebRTCClient::OnRtpPacketReceived(const uint8_t* data, size_t size) {
 }
 
 void WebRTCClient::DrainReorderBuffer() {
+    auto now = std::chrono::steady_clock::now();
+
     while (!reorderBuffer_.empty()) {
         auto it = reorderBuffer_.begin();
         uint16_t seq = it->first;
@@ -188,34 +190,74 @@ void WebRTCClient::DrainReorderBuffer() {
             ProcessOrderedPacket(it->second.data(), it->second.size());
             nextExpectedSeq_ = static_cast<uint16_t>(nextExpectedSeq_ + 1);
             reorderBuffer_.erase(it);
-        } else if (reorderBuffer_.size() >= 16) {
-            uint16_t lost = static_cast<uint16_t>(seq - nextExpectedSeq_);
-            lostPacketCount_ += lost;
-            periodLostPackets_ += lost;
-            isFrameCorrupted_ = true;
-            fuBuffer_.clear();
-            std::cerr << "[WebRTC RTP DROP] Lost " << lost << " packets! Frame corrupted. Expected seq: "
-                      << nextExpectedSeq_ << ", advancing to: " << seq
-                      << " (Total lost: " << lostPacketCount_ << ")" << std::endl;
+            hasGapDetected_ = false;
+        } else {
+            bool forceFlush = false;
 
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastIdrRequestTime_).count();
-            if (elapsed >= 150) {
-                lastIdrRequestTime_ = now;
-                RequestIDR();
+            if (reorderBuffer_.size() >= 16) {
+                forceFlush = true;
+            } else if (hasGapDetected_) {
+                auto gapElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - gapDetectedTime_).count();
+                if (gapElapsed >= kReorderTimeoutMs) {
+                    forceFlush = true;
+                }
             }
 
-            ProcessOrderedPacket(it->second.data(), it->second.size());
-            nextExpectedSeq_ = static_cast<uint16_t>(seq + 1);
-            reorderBuffer_.erase(it);
-        } else {
-            break;
+            if (forceFlush) {
+                uint16_t lost = static_cast<uint16_t>(seq - nextExpectedSeq_);
+                lostPacketCount_ += lost;
+                periodLostPackets_ += lost;
+                isFrameCorrupted_ = true;
+                waitingForIDR_ = true;
+                waitingForIDRSince_ = now;
+                receivedSpsPps_ = false;
+                fuBuffer_.clear();
+                hasGapDetected_ = false;
+
+                std::cerr << "[WebRTC RTP DROP] Lost " << lost << " packets! Waiting for IDR. Expected seq: "
+                          << nextExpectedSeq_ << ", advancing to: " << seq
+                          << " (Total lost: " << lostPacketCount_ << ")" << std::endl;
+
+                auto idrElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastIdrRequestTime_).count();
+                if (idrElapsed >= 150) {
+                    lastIdrRequestTime_ = now;
+                    RequestIDR();
+                }
+
+                ProcessOrderedPacket(it->second.data(), it->second.size());
+                nextExpectedSeq_ = static_cast<uint16_t>(seq + 1);
+                reorderBuffer_.erase(it);
+            } else {
+                if (!hasGapDetected_) {
+                    hasGapDetected_ = true;
+                    gapDetectedTime_ = now;
+                }
+                break;
+            }
         }
     }
 }
 
 void WebRTCClient::DispatchAssembledFrame() {
     if (!assembledFrameBuffer_.empty() && !isFrameCorrupted_) {
+        if (waitingForIDR_) {
+            if (ContainsKeyframeNal()) {
+                waitingForIDR_ = false;
+                std::cout << "[WebRTC] IDR received, resuming decode" << std::endl;
+            } else {
+                auto now = std::chrono::steady_clock::now();
+                auto waitMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - waitingForIDRSince_).count();
+                if (waitMs >= kIdrWaitSafetyMs) {
+                    waitingForIDRSince_ = now;
+                    RequestIDR();
+                }
+                assembledFrameBuffer_.clear();
+                fuBuffer_.clear();
+                hasFrameData_ = false;
+                return;
+            }
+        }
+
         if (!receivedSpsPps_) {
             const uint8_t* buf = assembledFrameBuffer_.data();
             size_t bufSize = assembledFrameBuffer_.size();
@@ -315,6 +357,23 @@ void WebRTCClient::ProcessOrderedPacket(const uint8_t* data, size_t size) {
     }
 }
 
+bool WebRTCClient::ContainsKeyframeNal() const {
+    const uint8_t* buf = assembledFrameBuffer_.data();
+    size_t bufSize = assembledFrameBuffer_.size();
+    for (size_t i = 0; i + 4 < bufSize; ++i) {
+        if (buf[i] == 0 && buf[i + 1] == 0 && ((buf[i + 2] == 1) || (buf[i + 2] == 0 && buf[i + 3] == 1))) {
+            size_t typeIdx = (buf[i + 2] == 1) ? (i + 3) : (i + 4);
+            if (typeIdx < bufSize) {
+                uint8_t nType = (buf[typeIdx] >> 1) & 0x3F;
+                if (nType == 19 || nType == 20 || nType == 21 || nType == 32 || nType == 33 || nType == 34) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 void WebRTCClient::Shutdown() noexcept {
     connected_ = false;
     hasRemoteDescription_ = false;
@@ -329,6 +388,8 @@ void WebRTCClient::Shutdown() noexcept {
     hasFrameData_ = false;
     receivedSpsPps_ = false;
     isFrameCorrupted_ = false;
+    waitingForIDR_ = false;
+    hasGapDetected_ = false;
     currentFrameTimestamp_ = 0;
     lostPacketCount_ = 0;
     periodReceivedPackets_ = 0;
