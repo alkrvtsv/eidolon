@@ -25,6 +25,7 @@ private:
     bool CreateOutputResources();
     bool InitializeVideoPipeline();
     ID3D11VideoProcessorOutputView* GetOrCreateOutputView(ID3D11Texture2D* texture);
+    ID3D11VideoProcessorInputView* GetOrCreateInputView(ID3D11Texture2D* texture);
 
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;
@@ -32,11 +33,10 @@ private:
     ComPtr<ID3D11VideoContext> videoContext_;
     ComPtr<ID3D11VideoProcessorEnumerator> videoProcessorEnumerator_;
     ComPtr<ID3D11VideoProcessor> videoProcessor_;
-
     ComPtr<ID3D11Texture2D> outputTextureNV12_;
     ComPtr<ID3D11VideoProcessorOutputView> outputView_;
     std::unordered_map<ID3D11Texture2D*, ComPtr<ID3D11VideoProcessorOutputView>> outputViewsCache_;
-
+    std::unordered_map<ID3D11Texture2D*, ComPtr<ID3D11VideoProcessorInputView>> inputViewsCache_;
     uint32_t width_{0};
     uint32_t height_{0};
 };

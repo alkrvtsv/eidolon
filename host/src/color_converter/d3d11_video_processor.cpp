@@ -44,6 +44,7 @@ bool D3D11VideoProcessorConverter::Initialize(ID3D11Device* device, ID3D11Device
 }
 
 void D3D11VideoProcessorConverter::Shutdown() {
+    inputViewsCache_.clear();
     outputViewsCache_.clear();
     outputView_.Reset();
     outputTextureNV12_.Reset();
@@ -59,6 +60,7 @@ void D3D11VideoProcessorConverter::Shutdown() {
 
 bool D3D11VideoProcessorConverter::InitializeVideoPipeline() {
     D3D11_VIDEO_PROCESSOR_CONTENT_DESC contentDesc = {};
+
     contentDesc.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
     contentDesc.InputFrameRate.Numerator = 60;
     contentDesc.InputFrameRate.Denominator = 1;
@@ -169,12 +171,15 @@ ID3D11VideoProcessorOutputView* D3D11VideoProcessorConverter::GetOrCreateOutputV
     return rawView;
 }
 
-bool D3D11VideoProcessorConverter::Convert(ID3D11Texture2D* pInputTexture, ID3D11Texture2D** ppOutputTexture) {
-    if (!pInputTexture || !ppOutputTexture || !videoProcessor_ || !outputView_) {
-        return false;
+ID3D11VideoProcessorInputView* D3D11VideoProcessorConverter::GetOrCreateInputView(ID3D11Texture2D* texture) {
+    if (!texture || !videoDevice_ || !videoProcessorEnumerator_) {
+        return nullptr;
     }
 
-    *ppOutputTexture = nullptr;
+    auto it = inputViewsCache_.find(texture);
+    if (it != inputViewsCache_.end()) {
+        return it->second.Get();
+    }
 
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC inViewDesc = {};
     inViewDesc.FourCC = 0;
@@ -182,15 +187,32 @@ bool D3D11VideoProcessorConverter::Convert(ID3D11Texture2D* pInputTexture, ID3D1
     inViewDesc.Texture2D.MipSlice = 0;
     inViewDesc.Texture2D.ArraySlice = 0;
 
-    ComPtr<ID3D11VideoProcessorInputView> inputView;
+    ComPtr<ID3D11VideoProcessorInputView> newView;
     HRESULT hr = videoDevice_->CreateVideoProcessorInputView(
-        pInputTexture,
+        texture,
         videoProcessorEnumerator_.Get(),
         &inViewDesc,
-        &inputView
+        &newView
     );
 
     if (FAILED(hr)) {
+        return nullptr;
+    }
+
+    ID3D11VideoProcessorInputView* rawView = newView.Get();
+    inputViewsCache_.emplace(texture, std::move(newView));
+    return rawView;
+}
+
+bool D3D11VideoProcessorConverter::Convert(ID3D11Texture2D* pInputTexture, ID3D11Texture2D** ppOutputTexture) {
+    if (!pInputTexture || !ppOutputTexture || !videoProcessor_ || !outputView_) {
+        return false;
+    }
+
+    *ppOutputTexture = nullptr;
+
+    ID3D11VideoProcessorInputView* inputView = GetOrCreateInputView(pInputTexture);
+    if (!inputView) {
         return false;
     }
 
@@ -200,7 +222,7 @@ bool D3D11VideoProcessorConverter::Convert(ID3D11Texture2D* pInputTexture, ID3D1
     streamData.InputFrameOrField = 0;
     streamData.PastFrames = 0;
     streamData.FutureFrames = 0;
-    streamData.pInputSurface = inputView.Get();
+    streamData.pInputSurface = inputView;
 
     RECT srcRect = { 0, 0, static_cast<LONG>(width_), static_cast<LONG>(height_) };
     RECT destRect = { 0, 0, static_cast<LONG>(width_), static_cast<LONG>(height_) };
@@ -209,7 +231,7 @@ bool D3D11VideoProcessorConverter::Convert(ID3D11Texture2D* pInputTexture, ID3D1
     videoContext_->VideoProcessorSetStreamDestRect(videoProcessor_.Get(), 0, TRUE, &destRect);
     videoContext_->VideoProcessorSetOutputTargetRect(videoProcessor_.Get(), TRUE, &destRect);
 
-    hr = videoContext_->VideoProcessorBlt(
+    HRESULT hr = videoContext_->VideoProcessorBlt(
         videoProcessor_.Get(),
         outputView_.Get(),
         0,
@@ -236,21 +258,8 @@ bool D3D11VideoProcessorConverter::ConvertTo(ID3D11Texture2D* pInputTexture, ID3
         return false;
     }
 
-    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC inViewDesc = {};
-    inViewDesc.FourCC = 0;
-    inViewDesc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-    inViewDesc.Texture2D.MipSlice = 0;
-    inViewDesc.Texture2D.ArraySlice = 0;
-
-    ComPtr<ID3D11VideoProcessorInputView> inputView;
-    HRESULT hr = videoDevice_->CreateVideoProcessorInputView(
-        pInputTexture,
-        videoProcessorEnumerator_.Get(),
-        &inViewDesc,
-        &inputView
-    );
-
-    if (FAILED(hr)) {
+    ID3D11VideoProcessorInputView* inputView = GetOrCreateInputView(pInputTexture);
+    if (!inputView) {
         return false;
     }
 
@@ -260,7 +269,7 @@ bool D3D11VideoProcessorConverter::ConvertTo(ID3D11Texture2D* pInputTexture, ID3
     streamData.InputFrameOrField = 0;
     streamData.PastFrames = 0;
     streamData.FutureFrames = 0;
-    streamData.pInputSurface = inputView.Get();
+    streamData.pInputSurface = inputView;
 
     RECT srcRect = { 0, 0, static_cast<LONG>(width_), static_cast<LONG>(height_) };
     RECT destRect = { 0, 0, static_cast<LONG>(width_), static_cast<LONG>(height_) };
@@ -269,7 +278,7 @@ bool D3D11VideoProcessorConverter::ConvertTo(ID3D11Texture2D* pInputTexture, ID3
     videoContext_->VideoProcessorSetStreamDestRect(videoProcessor_.Get(), 0, TRUE, &destRect);
     videoContext_->VideoProcessorSetOutputTargetRect(videoProcessor_.Get(), TRUE, &destRect);
 
-    hr = videoContext_->VideoProcessorBlt(
+    HRESULT hr = videoContext_->VideoProcessorBlt(
         videoProcessor_.Get(),
         targetOutputView,
         0,
