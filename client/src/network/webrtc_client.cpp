@@ -416,7 +416,7 @@ bool WebRTCClient::ContainsKeyframeNal() const {
             size_t typeIdx = (buf[i + 2] == 1) ? (i + 3) : (i + 4);
             if (typeIdx < bufSize) {
                 uint8_t nType = (buf[typeIdx] >> 1) & 0x3F;
-                if (nType == 19 || nType == 20 || nType == 21 || nType == 32 || nType == 33 || nType == 34) {
+                if (nType == 19 || nType == 20 || nType == 32 || nType == 33 || nType == 34) {
                     return true;
                 }
             }
