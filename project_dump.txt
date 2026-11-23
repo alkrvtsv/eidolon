@@ -306,6 +306,7 @@ public:
     void Shutdown() noexcept override;
 
     bool Decode(const uint8_t* data, size_t size, bool render = true) override;
+    void Flush() noexcept override;
     void SetFrameCallback(std::function<void(const DecodedFrame&)> callback) override {
         frameCallback_ = std::move(callback);
     }
@@ -351,6 +352,7 @@ public:
     virtual void Shutdown() noexcept = 0;
 
     virtual bool Decode(const uint8_t* data, size_t size, bool render = true) = 0;
+    virtual void Flush() noexcept = 0;
     virtual void SetFrameCallback(std::function<void(const DecodedFrame&)> callback) = 0;
 };
 ```
@@ -452,6 +454,7 @@ public:
     void SendInputData(const uint8_t* data, size_t size);
     void SendClientConfig(const ClientConfigMessage& config);
     void RequestIDR();
+    void NotifyFrameDropped();
 
     void SetSignalingSender(std::function<void(const std::string&)> callback) {
         signalingSend_ = std::move(callback);
@@ -467,6 +470,9 @@ public:
     }
     void SetCursorPositionCallback(std::function<void(const CursorPositionMessage&)> callback) {
         cursorPositionCallback_ = std::move(callback);
+    }
+    void SetOnWaitingForIDRCallback(std::function<void()> callback) {
+        onWaitingForIDR_ = std::move(callback);
     }
 
     bool IsConnected() const { return connected_; }
@@ -550,6 +556,7 @@ private:
     std::function<void(const uint8_t* data, size_t size)> audioCallback_;
     std::function<void(const CursorShapeMessage&, const uint8_t*)> cursorShapeCallback_;
     std::function<void(const CursorPositionMessage&)> cursorPositionCallback_;
+    std::function<void()> onWaitingForIDR_;
 };
 ```
 
@@ -1058,14 +1065,16 @@ int main(int argc, char* argv[]) {
         client.SendInputData(data, size);
     });
 
+    client.SetOnWaitingForIDRCallback([&]() {
+        decoder.Flush();
+    });
+
     client.SetVideoCallback([&](const uint8_t* data, size_t size, uint64_t timestampUs) {
         auto now = std::chrono::steady_clock::now();
         float interval = std::chrono::duration<float, std::milli>(now - lastPacketReceiveTime).count();
         lastPacketReceiveTime = now;
-
         metrics.frameIntervalMs = interval;
         metrics.frameJitterMs = std::abs(interval - targetIntervalMs);
-
         clientAssembledFrames.fetch_add(1, std::memory_order_relaxed);
         lastNetFrameReceiveMs.store(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
             now.time_since_epoch()).count()), std::memory_order_relaxed);
@@ -1073,11 +1082,12 @@ int main(int argc, char* argv[]) {
         EncodedVideoPacket pkt;
         pkt.data.assign(data, data + size);
         pkt.captureTimestampUs = timestampUs;
-
         if (videoQueue.Push(std::move(pkt))) {
             SetEvent(videoEvent);
         } else {
             clientQueuePushFails.fetch_add(1, std::memory_order_relaxed);
+            client.NotifyFrameDropped();
+            decoder.Flush();
             SetEvent(videoEvent);
         }
     });
@@ -1437,6 +1447,16 @@ bool FFmpegD3D11VADecoder::Initialize(ID3D11Device* device, ID3D11DeviceContext*
     }
 
     return true;
+}
+
+void FFmpegD3D11VADecoder::Flush() noexcept {
+    if (codecContext_) {
+        avcodec_flush_buffers(codecContext_);
+    }
+    if (parserContext_) {
+        av_parser_close(parserContext_);
+        parserContext_ = av_parser_init(codec_->id);
+    }
 }
 
 void FFmpegD3D11VADecoder::Shutdown() noexcept {
@@ -2178,6 +2198,10 @@ void WebRTCClient::DrainReorderBuffer() {
                 fuBuffer_.clear();
                 hasGapDetected_ = false;
 
+                if (onWaitingForIDR_) {
+                    onWaitingForIDR_();
+                }
+
                 std::cerr << "[WebRTC RTP DROP] Lost " << lost << " packets! Waiting for IDR. Expected seq: "
                           << nextExpectedSeq_ << ", advancing to: " << seq
                           << " (Total lost: " << lostPacketCount_ << ")" << std::endl;
@@ -2329,7 +2353,7 @@ bool WebRTCClient::ContainsKeyframeNal() const {
             size_t typeIdx = (buf[i + 2] == 1) ? (i + 3) : (i + 4);
             if (typeIdx < bufSize) {
                 uint8_t nType = (buf[typeIdx] >> 1) & 0x3F;
-                if (nType == 19 || nType == 20 || nType == 21 || nType == 32 || nType == 33 || nType == 34) {
+                if (nType == 19 || nType == 20 || nType == 32 || nType == 33 || nType == 34) {
                     return true;
                 }
             }
@@ -2428,6 +2452,15 @@ void WebRTCClient::SendClientConfig(const ClientConfigMessage& config) {
                   << " @" << config.refreshRate << "Hz, Max Bitrate: "
                   << config.maxBitrateKbps << " kbps" << std::endl;
     }
+}
+
+void WebRTCClient::NotifyFrameDropped() {
+    waitingForIDR_ = true;
+    waitingForIDRSince_ = std::chrono::steady_clock::now();
+    receivedSpsPps_ = false;
+    isFrameCorrupted_ = true;
+    std::cerr << "[WebRTC QUEUE DROP] Frame dropped -> waiting for IDR" << std::endl;
+    RequestIDR();
 }
 
 void WebRTCClient::RequestIDR() {
