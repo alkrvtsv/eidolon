@@ -4018,7 +4018,7 @@ int main() {
 
             if (targetFps != sessionFps.load(std::memory_order_relaxed)) {
                 sessionFps.store(targetFps);
-                int64_t targetIntervalUs = static_cast<int64_t>((1'000'000.0 / targetFps) * 0.85);
+                int64_t targetIntervalUs = static_cast<int64_t>(1'000'000.0 / targetFps);
                 sessionMinIntervalUs.store(targetIntervalUs);
                 reconfigureEncoderRequested.store(true);
             }
