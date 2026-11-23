@@ -327,6 +327,10 @@ int main(int argc, char* argv[]) {
         client.SendInputData(data, size);
     });
 
+    client.SetOnWaitingForIDRCallback([&]() {
+        decoder.Flush();
+    });
+
     client.SetVideoCallback([&](const uint8_t* data, size_t size, uint64_t timestampUs) {
         auto now = std::chrono::steady_clock::now();
         float interval = std::chrono::duration<float, std::milli>(now - lastPacketReceiveTime).count();

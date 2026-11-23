@@ -261,6 +261,10 @@ void WebRTCClient::DrainReorderBuffer() {
                 fuBuffer_.clear();
                 hasGapDetected_ = false;
 
+                if (onWaitingForIDR_) {
+                    onWaitingForIDR_();
+                }
+
                 std::cerr << "[WebRTC RTP DROP] Lost " << lost << " packets! Waiting for IDR. Expected seq: "
                           << nextExpectedSeq_ << ", advancing to: " << seq
                           << " (Total lost: " << lostPacketCount_ << ")" << std::endl;

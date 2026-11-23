@@ -40,6 +40,9 @@ public:
     void SetCursorPositionCallback(std::function<void(const CursorPositionMessage&)> callback) {
         cursorPositionCallback_ = std::move(callback);
     }
+    void SetOnWaitingForIDRCallback(std::function<void()> callback) {
+        onWaitingForIDR_ = std::move(callback);
+    }
 
     bool IsConnected() const { return connected_; }
 
@@ -122,4 +125,5 @@ private:
     std::function<void(const uint8_t* data, size_t size)> audioCallback_;
     std::function<void(const CursorShapeMessage&, const uint8_t*)> cursorShapeCallback_;
     std::function<void(const CursorPositionMessage&)> cursorPositionCallback_;
+    std::function<void()> onWaitingForIDR_;
 };
