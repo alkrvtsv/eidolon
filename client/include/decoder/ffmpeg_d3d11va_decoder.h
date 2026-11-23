@@ -20,6 +20,7 @@ public:
     void Shutdown() noexcept override;
 
     bool Decode(const uint8_t* data, size_t size, bool render = true) override;
+    void Flush() noexcept override;
     void SetFrameCallback(std::function<void(const DecodedFrame&)> callback) override {
         frameCallback_ = std::move(callback);
     }

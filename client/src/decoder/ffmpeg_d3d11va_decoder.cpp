@@ -96,6 +96,16 @@ bool FFmpegD3D11VADecoder::Initialize(ID3D11Device* device, ID3D11DeviceContext*
     return true;
 }
 
+void FFmpegD3D11VADecoder::Flush() noexcept {
+    if (codecContext_) {
+        avcodec_flush_buffers(codecContext_);
+    }
+    if (parserContext_) {
+        av_parser_close(parserContext_);
+        parserContext_ = av_parser_init(codec_->id);
+    }
+}
+
 void FFmpegD3D11VADecoder::Shutdown() noexcept {
     if (frame_) {
         av_frame_free(&frame_);

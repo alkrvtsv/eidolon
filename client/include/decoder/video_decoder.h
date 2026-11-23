@@ -19,5 +19,6 @@ public:
     virtual void Shutdown() noexcept = 0;
 
     virtual bool Decode(const uint8_t* data, size_t size, bool render = true) = 0;
+    virtual void Flush() noexcept = 0;
     virtual void SetFrameCallback(std::function<void(const DecodedFrame&)> callback) = 0;
 };

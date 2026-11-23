@@ -23,6 +23,7 @@ public:
     void SendInputData(const uint8_t* data, size_t size);
     void SendClientConfig(const ClientConfigMessage& config);
     void RequestIDR();
+    void NotifyFrameDropped();
 
     void SetSignalingSender(std::function<void(const std::string&)> callback) {
         signalingSend_ = std::move(callback);

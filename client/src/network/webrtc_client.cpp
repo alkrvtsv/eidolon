@@ -513,6 +513,15 @@ void WebRTCClient::SendClientConfig(const ClientConfigMessage& config) {
     }
 }
 
+void WebRTCClient::NotifyFrameDropped() {
+    waitingForIDR_ = true;
+    waitingForIDRSince_ = std::chrono::steady_clock::now();
+    receivedSpsPps_ = false;
+    isFrameCorrupted_ = true;
+    std::cerr << "[WebRTC QUEUE DROP] Frame dropped -> waiting for IDR" << std::endl;
+    RequestIDR();
+}
+
 void WebRTCClient::RequestIDR() {
     if (controlChannel_ && controlChannel_->isOpen()) {
         ControlCommandMessage msg;

@@ -331,10 +331,8 @@ int main(int argc, char* argv[]) {
         auto now = std::chrono::steady_clock::now();
         float interval = std::chrono::duration<float, std::milli>(now - lastPacketReceiveTime).count();
         lastPacketReceiveTime = now;
-
         metrics.frameIntervalMs = interval;
         metrics.frameJitterMs = std::abs(interval - targetIntervalMs);
-
         clientAssembledFrames.fetch_add(1, std::memory_order_relaxed);
         lastNetFrameReceiveMs.store(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
             now.time_since_epoch()).count()), std::memory_order_relaxed);
@@ -342,11 +340,12 @@ int main(int argc, char* argv[]) {
         EncodedVideoPacket pkt;
         pkt.data.assign(data, data + size);
         pkt.captureTimestampUs = timestampUs;
-
         if (videoQueue.Push(std::move(pkt))) {
             SetEvent(videoEvent);
         } else {
             clientQueuePushFails.fetch_add(1, std::memory_order_relaxed);
+            client.NotifyFrameDropped();
+            decoder.Flush();
             SetEvent(videoEvent);
         }
     });
