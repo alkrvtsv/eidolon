@@ -282,6 +282,7 @@ void WebRTCClient::DrainReorderBuffer() {
                 if (!hasGapDetected_) {
                     hasGapDetected_ = true;
                     gapDetectedTime_ = now;
+                    SendNack(nextExpectedSeq_, static_cast<uint16_t>(seq - nextExpectedSeq_));
                 }
                 break;
             }
@@ -515,6 +516,19 @@ void WebRTCClient::SendClientConfig(const ClientConfigMessage& config) {
                   << " @" << config.refreshRate << "Hz, Max Bitrate: "
                   << config.maxBitrateKbps << " kbps" << std::endl;
     }
+}
+
+void WebRTCClient::SendNack(uint16_t firstSeq, uint16_t count) {
+    if (!controlChannel_ || !controlChannel_->isOpen()) return;
+    NackMessage msg;
+    msg.type = MessageType::NackRequest;
+    msg.firstSeq = firstSeq;
+    msg.count = count;
+    rtc::binary payload(
+        reinterpret_cast<const std::byte*>(&msg),
+        reinterpret_cast<const std::byte*>(&msg) + sizeof(NackMessage)
+    );
+    controlChannel_->send(std::move(payload));
 }
 
 void WebRTCClient::NotifyFrameDropped() {

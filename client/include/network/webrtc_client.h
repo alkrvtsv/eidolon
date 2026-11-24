@@ -24,6 +24,7 @@ public:
     void SendClientConfig(const ClientConfigMessage& config);
     void RequestIDR();
     void NotifyFrameDropped();
+    void SendNack(uint16_t firstSeq, uint16_t count);
 
     void SetSignalingSender(std::function<void(const std::string&)> callback) {
         signalingSend_ = std::move(callback);

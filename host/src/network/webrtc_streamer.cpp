@@ -151,6 +151,9 @@ void WebRTCStreamer::SetupDataChannels() {
                 } else if (type == MessageType::NetworkFeedback && bin.size() >= sizeof(NetworkFeedbackMessage)) {
                     const auto* fb = reinterpret_cast<const NetworkFeedbackMessage*>(bin.data());
                     OnNetworkFeedback(*fb);
+                } else if (type == MessageType::NackRequest && bin.size() >= sizeof(NackMessage)) {
+                    const auto* nack = reinterpret_cast<const NackMessage*>(bin.data());
+                    RetransmitPackets(*nack);
                 }
             }
         }
@@ -219,19 +222,27 @@ void WebRTCStreamer::SendRtpPacket(const uint8_t* payload, size_t payloadSize, b
     rtp[1] = static_cast<uint8_t>((marker ? 0x80 : 0x00) | (96 & 0x7F));
     rtp[2] = static_cast<uint8_t>((rtpSequenceNumber_ >> 8) & 0xFF);
     rtp[3] = static_cast<uint8_t>(rtpSequenceNumber_ & 0xFF);
-    rtpSequenceNumber_++;
-
     rtp[4] = static_cast<uint8_t>((rtpTimestamp >> 24) & 0xFF);
     rtp[5] = static_cast<uint8_t>((rtpTimestamp >> 16) & 0xFF);
     rtp[6] = static_cast<uint8_t>((rtpTimestamp >> 8) & 0xFF);
     rtp[7] = static_cast<uint8_t>(rtpTimestamp & 0xFF);
-
     rtp[8] = static_cast<uint8_t>((rtpSsrc_ >> 24) & 0xFF);
     rtp[9] = static_cast<uint8_t>((rtpSsrc_ >> 16) & 0xFF);
     rtp[10] = static_cast<uint8_t>((rtpSsrc_ >> 8) & 0xFF);
     rtp[11] = static_cast<uint8_t>(rtpSsrc_ & 0xFF);
 
     std::memcpy(rtp + 12, payload, payloadSize);
+
+    uint16_t currentSeq = rtpSequenceNumber_;
+    rtpSequenceNumber_++;
+
+    {
+        std::lock_guard<std::mutex> lock(retransmitMutex_);
+        retransmitBuffer_.push_back({currentSeq, std::vector<uint8_t>(rtp, rtp + packetSize)});
+        if (retransmitBuffer_.size() > kMaxRetransmitBufferSize) {
+            retransmitBuffer_.pop_front();
+        }
+    }
 
     rtc::binary bin(reinterpret_cast<const std::byte*>(rtp), reinterpret_cast<const std::byte*>(rtp + packetSize));
     videoTrack_->send(std::move(bin));
@@ -338,6 +349,26 @@ bool WebRTCStreamer::SendVideoFrame(const uint8_t* data, size_t size, uint64_t c
         return false;
     } catch (...) {
         return false;
+    }
+}
+
+void WebRTCStreamer::RetransmitPackets(const NackMessage& nack) {
+    if (!videoTrack_ || !videoTrack_->isOpen()) return;
+
+    uint16_t count = (std::min)(nack.count, kMaxNackCount);
+    std::lock_guard<std::mutex> lock(retransmitMutex_);
+    for (uint16_t i = 0; i < count; ++i) {
+        uint16_t targetSeq = static_cast<uint16_t>(nack.firstSeq + i);
+        for (const auto& stored : retransmitBuffer_) {
+            if (stored.seq == targetSeq) {
+                rtc::binary bin(
+                    reinterpret_cast<const std::byte*>(stored.data.data()),
+                    reinterpret_cast<const std::byte*>(stored.data.data() + stored.data.size())
+                );
+                videoTrack_->send(std::move(bin));
+                break;
+            }
+        }
     }
 }
 

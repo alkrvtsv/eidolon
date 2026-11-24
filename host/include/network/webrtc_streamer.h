@@ -9,6 +9,8 @@
 #include <string>
 #include <utility>
 #include <chrono>
+#include <deque>
+#include <mutex>
 
 class WebRTCStreamer {
 public:
@@ -49,6 +51,16 @@ private:
     void SetupDataChannels();
     void SendRtpPacket(const uint8_t* payload, size_t payloadSize, bool marker, uint32_t rtpTimestamp);
     void OnNetworkFeedback(const NetworkFeedbackMessage& fb);
+    void RetransmitPackets(const NackMessage& nack);
+
+    struct StoredRtpPacket {
+        uint16_t seq{0};
+        std::vector<uint8_t> data;
+    };
+    std::deque<StoredRtpPacket> retransmitBuffer_;
+    std::mutex retransmitMutex_;
+    static constexpr size_t kMaxRetransmitBufferSize = 1024;
+    static constexpr uint16_t kMaxNackCount = 64;
 
     std::shared_ptr<rtc::PeerConnection> pc_;
     std::shared_ptr<rtc::Track> videoTrack_;

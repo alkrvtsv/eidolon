@@ -14,7 +14,8 @@ enum class MessageType : uint8_t {
     ControlCommand = 7,
     InputMouseAbsolute = 8,
     ClientConfig = 9,
-    NetworkFeedback = 10
+    NetworkFeedback = 10,
+    NackRequest = 11
 };
 
 struct MouseRelativeMessage {
@@ -88,4 +89,9 @@ struct NetworkFeedbackMessage {
     uint32_t frameJitterMs{0};
 };
 
+struct NackMessage {
+    MessageType type{MessageType::NackRequest};
+    uint16_t firstSeq{0};
+    uint16_t count{0};
+};
 #pragma pack(pop)
