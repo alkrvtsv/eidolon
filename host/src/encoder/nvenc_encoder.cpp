@@ -8,6 +8,48 @@ NVENCEncoder::~NVENCEncoder() noexcept {
     Shutdown();
 }
 
+bool NVENCEncoder::InitializeGpuSync() {
+    HRESULT hr = context_.As(&context4_);
+    if (FAILED(hr)) {
+        std::cerr << "[NVENC ERROR] ID3D11DeviceContext4 not available (requires Windows 10 1703+)" << std::endl;
+        return false;
+    }
+    ComPtr<ID3D11Device5> device5;
+    hr = device_.As(&device5);
+    if (FAILED(hr)) {
+        std::cerr << "[NVENC ERROR] ID3D11Device5 not available (requires Windows 10 1703+)" << std::endl;
+        return false;
+    }
+    hr = device5->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&gpuFence_));
+    if (FAILED(hr)) {
+        std::cerr << "[NVENC ERROR] CreateFence failed: " << hr << std::endl;
+        return false;
+    }
+    fenceEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!fenceEvent_) {
+        std::cerr << "[NVENC ERROR] CreateEventW failed" << std::endl;
+        return false;
+    }
+    fenceValue_ = 0;
+    return true;
+}
+
+bool NVENCEncoder::WaitForGpuCompletion() {
+    if (!context4_ || !gpuFence_ || !fenceEvent_) {
+        return false;
+    }
+    ++fenceValue_;
+    context4_->Signal(gpuFence_.Get(), fenceValue_);
+    if (FAILED(gpuFence_->SetEventOnCompletion(fenceValue_, fenceEvent_))) {
+        return false;
+    }
+    WaitForSingleObject(fenceEvent_, INFINITE);
+    if (device_->GetDeviceRemovedReason() != S_OK) {
+        return false;
+    }
+    return true;
+}
+
 bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config) {
     if (!device) {
         return false;
@@ -16,12 +58,19 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     Shutdown();
     device_ = device;
     device_->GetImmediateContext(&context_);
+
+    if (!InitializeGpuSync()) {
+        Shutdown();
+        return false;
+    }
+
     config_ = config;
     currentSlot_ = 0;
     lastValidSlot_ = -1;
 
     nvencModule_ = LoadLibraryW(L"nvEncodeAPI64.dll");
     if (!nvencModule_) {
+        Shutdown();
         return false;
     }
 
@@ -128,17 +177,8 @@ bool NVENCEncoder::Initialize(ID3D11Device* device, const EncoderConfig& config)
     texDesc.CPUAccessFlags = 0;
     texDesc.MiscFlags = 0;
 
-    D3D11_QUERY_DESC queryDesc = {};
-    queryDesc.Query = D3D11_QUERY_EVENT;
-
     for (int i = 0; i < kSlotCount; ++i) {
         HRESULT hr = device_->CreateTexture2D(&texDesc, nullptr, &slots_[i].inputTexture);
-        if (FAILED(hr)) {
-            Shutdown();
-            return false;
-        }
-
-        hr = device_->CreateQuery(&queryDesc, &slots_[i].completionQuery);
         if (FAILED(hr)) {
             Shutdown();
             return false;
@@ -186,7 +226,6 @@ void NVENCEncoder::Shutdown() noexcept {
                 nvApi_->nvEncDestroyBitstreamBuffer(encoder_, slot.bitstreamBuffer);
                 slot.bitstreamBuffer = nullptr;
             }
-            slot.completionQuery.Reset();
             slot.inputTexture.Reset();
         }
         nvApi_->nvEncDestroyEncoder(encoder_);
@@ -198,8 +237,15 @@ void NVENCEncoder::Shutdown() noexcept {
         nvencModule_ = nullptr;
     }
 
+    if (fenceEvent_) {
+        CloseHandle(fenceEvent_);
+        fenceEvent_ = nullptr;
+    }
+    gpuFence_.Reset();
+    context4_.Reset();
     context_.Reset();
     device_.Reset();
+    fenceValue_ = 0;
     lastValidSlot_ = -1;
     currentSlot_ = 0;
     currentBitrate_.store(0, std::memory_order_relaxed);
@@ -269,14 +315,11 @@ bool NVENCEncoder::EncodeSlot(int slotIndex, bool forceIDR) {
 
     DrainPendingCommands();
 
-    auto& slot = slots_[slotIndex];
-
-    if (context_ && slot.completionQuery) {
-        context_->End(slot.completionQuery.Get());
-        BOOL queryData = FALSE;
-        while (context_->GetData(slot.completionQuery.Get(), &queryData, sizeof(BOOL), 0) == S_FALSE) {
-        }
+    if (!WaitForGpuCompletion()) {
+        return false;
     }
+
+    auto& slot = slots_[slotIndex];
 
     NV_ENC_MAP_INPUT_RESOURCE mapInput = {};
     mapInput.version = NV_ENC_MAP_INPUT_RESOURCE_VER;

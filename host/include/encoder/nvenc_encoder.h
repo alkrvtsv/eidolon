@@ -3,6 +3,8 @@
 #include "encoder/video_encoder.h"
 #include "nvEncodeAPI.h"
 #include <d3d11.h>
+#include <d3d11_4.h>
+#include <windows.h>
 #include <wrl/client.h>
 #include <memory>
 #include <array>
@@ -37,7 +39,6 @@ private:
 
     struct ResourceSlot {
         ComPtr<ID3D11Texture2D> inputTexture;
-        ComPtr<ID3D11Query> completionQuery;
         NV_ENC_REGISTERED_PTR registeredResource{nullptr};
         NV_ENC_INPUT_PTR mappedResource{nullptr};
         NV_ENC_OUTPUT_PTR bitstreamBuffer{nullptr};
@@ -46,6 +47,8 @@ private:
     bool EncodeSlot(int slotIndex, bool forceIDR);
     void DrainPendingCommands();
     void ApplyBitrateChange(uint32_t bitrateBps);
+    bool InitializeGpuSync();
+    bool WaitForGpuCompletion();
 
     HMODULE nvencModule_{nullptr};
     std::unique_ptr<NV_ENCODE_API_FUNCTION_LIST> nvApi_;
@@ -53,6 +56,11 @@ private:
 
     ComPtr<ID3D11Device> device_;
     ComPtr<ID3D11DeviceContext> context_;
+    ComPtr<ID3D11DeviceContext4> context4_;
+    ComPtr<ID3D11Fence> gpuFence_;
+    uint64_t fenceValue_{0};
+    HANDLE fenceEvent_{nullptr};
+
     EncoderConfig config_{};
     NV_ENC_INITIALIZE_PARAMS initParams_{};
     NV_ENC_CONFIG encodeConfig_{};
